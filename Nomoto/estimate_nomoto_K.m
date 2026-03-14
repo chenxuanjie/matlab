@@ -1,4 +1,4 @@
-﻿%% 非线性 Nomoto 模型参数识别：K
+%% 非线性 Nomoto 模型参数识别：K
 % 模型形式：T * dr/dt + r + alpha * r^3 = K * delta
 %
 % 本脚本只识别 K。
@@ -142,10 +142,12 @@ rPlot = nomoto_utils.rateFromRad(data.r, cfg.yawRateUnit);
 steadyDeltaPlot = nomoto_utils.angleFromRad(steady.delta, cfg.angleUnit);
 steadyRPlot = nomoto_utils.rateFromRad(steady.r, cfg.yawRateUnit);
 
+style = nomoto_utils.thesisPlotStyle();
+
 figure('Name', 'K Identification - Time Series', 'Color', 'w');
 subplot(2, 1, 1);
-plot(data.time, deltaPlot, 'b-', 'LineWidth', 1.1);
-grid on;
+plot(data.time, deltaPlot, '-', 'Color', style.inputColor, 'LineWidth', style.lineWidth);
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['Time (' cfg.timeUnitLabel ')']);
 ylabel(['\delta (' nomoto_utils.angleUnitLabel(cfg.angleUnit) ')']);
 title('舵角时序数据');
@@ -159,12 +161,17 @@ hold on;
 for i = 1:numel(segments)
     x1 = segments(i).time(1);
     x2 = segments(i).time(end);
-    patch([x1 x2 x2 x1], [yLimits(1) yLimits(1) yLimits(2) yLimits(2)], [0.95 0.95 1.0], ...
-        'FaceAlpha', 0.10, 'EdgeColor', 'none', 'HandleVisibility', 'off');
+    patch([x1 x2 x2 x1], [yLimits(1) yLimits(1) yLimits(2) yLimits(2)], style.segmentPatchColor, ...
+        'FaceAlpha', 0.18, 'EdgeColor', 'none', 'HandleVisibility', 'off');
 end
-hMeasured = plot(data.time, rPlot, 'k-', 'LineWidth', 1.1, 'DisplayName', 'Measured r');
-hSteady = scatter(steady.timeEnd, steadyRPlot, 35, 'filled', 'DisplayName', 'Steady points');
-grid on;
+hMeasured = plot(data.time, rPlot, '-', 'Color', style.measuredColor, ...
+    'LineWidth', style.lineWidth, 'DisplayName', '实测 r');
+hSteady = scatter(steady.timeEnd, steadyRPlot, style.pointSize, 'o', ...
+    'MarkerFaceColor', style.pointColor, ...
+    'MarkerEdgeColor', style.pointColor, ...
+    'LineWidth', 0.6, ...
+    'DisplayName', '稳态点');
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['Time (' cfg.timeUnitLabel ')']);
 ylabel(['r (' nomoto_utils.rateUnitLabel(cfg.yawRateUnit) ')']);
 title('艏摇角速度时序数据与稳态点位置');
@@ -174,9 +181,12 @@ hold off;
 %% ======================== 图 2：稳态点拟合图 ========================
 
 figure('Name', 'K Identification - Steady Fit', 'Color', 'w');
-scatter(steadyDeltaPlot(fitMask), steadyRPlot(fitMask), 60, 'filled', 'DisplayName', '稳态散点');
 hold on;
-grid on;
+scatter(steadyDeltaPlot(fitMask), steadyRPlot(fitMask), style.pointSize + 10, 'o', ...
+    'MarkerFaceColor', style.pointColor, ...
+    'MarkerEdgeColor', style.pointColor, ...
+    'LineWidth', 0.6, ...
+    'DisplayName', '稳态散点');
 
 xFit = linspace(min(steadyDeltaFit), max(steadyDeltaFit), 300).';
 if fitThroughOrigin
@@ -187,8 +197,9 @@ end
 
 plot(nomoto_utils.angleFromRad(xFit, cfg.angleUnit), ...
     nomoto_utils.rateFromRad(yFit, cfg.yawRateUnit), ...
-    'r-', 'LineWidth', 1.8, 'DisplayName', '最小二乘拟合');
+    '-', 'Color', style.fitColor, 'LineWidth', style.fitLineWidth, 'DisplayName', '最小二乘拟合');
 
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['稳态舵角 \delta_{ss} (' nomoto_utils.angleUnitLabel(cfg.angleUnit) ')']);
 ylabel(['稳态艏摇角速度 r_{ss} (' nomoto_utils.rateUnitLabel(cfg.yawRateUnit) ')']);
 
@@ -208,7 +219,6 @@ end
 
 legend('Location', 'best');
 hold off;
-
 %% ======================== 命令行输出每段稳态值 ========================
 
 fprintf('\n===== 各稳态段统计 =====\n');
@@ -219,4 +229,6 @@ for i = 1:numel(segments)
         nomoto_utils.rateFromRad(steady.r(i), cfg.yawRateUnit), nomoto_utils.rateUnitLabel(cfg.yawRateUnit), ...
         steady.pointCount(i));
 end
+
+
 

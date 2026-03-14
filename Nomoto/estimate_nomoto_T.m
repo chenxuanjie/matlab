@@ -1,4 +1,4 @@
-﻿%% 非线性 Nomoto 模型参数识别：T
+%% 非线性 Nomoto 模型参数识别：T
 % 模型形式：T * dr/dt + r + alpha * r^3 = K * delta
 %
 % 本脚本在已知 K 的前提下识别 T。
@@ -106,10 +106,11 @@ fprintf('R^2 = %.6f\n', r2Value);
 
 %% ======================== 图 1：舵角输入时序 ========================
 
+style = nomoto_utils.thesisPlotStyle();
 deltaPlot = nomoto_utils.angleFromRad(data.delta, cfg.angleUnit);
 figure('Name', 'T Identification - Delta Input', 'Color', 'w');
-plot(data.time, deltaPlot, 'b-', 'LineWidth', 1.2);
-grid on;
+plot(data.time, deltaPlot, '-', 'Color', style.inputColor, 'LineWidth', style.lineWidth);
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['Time (' cfg.timeUnitLabel ')']);
 ylabel(['\delta (' nomoto_utils.angleUnitLabel(cfg.angleUnit) ')']);
 title('用于 T 识别的舵角输入');
@@ -121,10 +122,12 @@ rModelPlot = nomoto_utils.rateFromRad(rModel, cfg.yawRateUnit);
 
 figure('Name', 'T Identification - Model Comparison', 'Color', 'w');
 subplot(2, 1, 1);
-plot(data.time, rMeasuredPlot, 'k-', 'LineWidth', 1.2, 'DisplayName', 'Measured r');
+plot(data.time, rMeasuredPlot, '-', 'Color', style.measuredColor, ...
+    'LineWidth', style.lineWidth, 'DisplayName', '实测 r');
 hold on;
-plot(data.time, rModelPlot, 'r--', 'LineWidth', 1.5, 'DisplayName', 'Nomoto model');
-grid on;
+plot(data.time, rModelPlot, '-', 'Color', style.fitColor, ...
+    'LineWidth', style.fitLineWidth, 'DisplayName', 'Nomoto 模型');
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['Time (' cfg.timeUnitLabel ')']);
 ylabel(['r (' nomoto_utils.rateUnitLabel(cfg.yawRateUnit) ')']);
 title({ ...
@@ -137,12 +140,11 @@ hold off;
 
 subplot(2, 1, 2);
 residualPlot = nomoto_utils.rateFromRad(data.r - rModel, cfg.yawRateUnit);
-plot(data.time, residualPlot, 'b-', 'LineWidth', 1.1);
-grid on;
+plot(data.time, residualPlot, '-', 'Color', style.linearColor, 'LineWidth', style.lineWidth);
+nomoto_utils.applyThesisAxesStyle(style);
 xlabel(['Time (' cfg.timeUnitLabel ')']);
 ylabel(['Error (' nomoto_utils.rateUnitLabel(cfg.yawRateUnit) ')']);
 title('残差：Measured r - Model r');
-
 %% ======================== 命令行补充说明 ========================
 
 fprintf('\n说明：\n');
@@ -151,3 +153,5 @@ fprintf('2. 若拟合效果不好，建议：\n');
 fprintf('   - 只截取单次阶跃舵角响应区间；\n');
 fprintf('   - 调整滤波窗口；\n');
 fprintf('   - 重新检查 K 的取值是否合理。\n');
+
+

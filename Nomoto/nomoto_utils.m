@@ -1,4 +1,4 @@
-﻿classdef nomoto_utils
+classdef nomoto_utils
     % nomoto_utils
     % 公共工具类：
     % 1. 读取和预处理 Nomoto 参数识别数据
@@ -540,6 +540,39 @@
             end
         end
 
+        function style = thesisPlotStyle()
+            % thesisPlotStyle
+            % 返回适合毕业论文插图的统一绘图风格参数。
+
+            style = struct();
+            style.measuredColor = [0.20, 0.20, 0.20];
+            style.inputColor = [0.27, 0.45, 0.77];
+            style.linearColor = [0.27, 0.45, 0.77];
+            style.pointColor = [74, 35, 120] / 255;
+            style.fitColor = [0.82, 0.10, 0.10];
+            style.segmentPatchColor = [0.90, 0.93, 0.98];
+            style.lineWidth = 1.2;
+            style.fitLineWidth = 1.5;
+            style.pointSize = 32;
+            style.axesLineWidth = 0.9;
+            style.fontSize = 11;
+        end
+
+        function applyThesisAxesStyle(style)
+            % applyThesisAxesStyle
+            % 统一设置论文中常用的白底、网格、边框与字号风格。
+
+            if nargin < 1 || isempty(style)
+                style = nomoto_utils.thesisPlotStyle();
+            end
+
+            grid on;
+            box on;
+            ax = gca;
+            ax.LineWidth = style.axesLineWidth;
+            ax.FontSize = style.fontSize;
+        end
+
         function x = ensureColumn(x)
             % ensureColumn
             % 保证输出为列向量。
@@ -559,4 +592,6 @@
         end
     end
 end
+
+
 
