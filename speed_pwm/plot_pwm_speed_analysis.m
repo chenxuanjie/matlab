@@ -111,6 +111,24 @@ showExtraFitPointOnPlot = true;
 % false -> 使用拼接后的绝对时间
 useRelativeTimeInSegmentPlots = true;
 
+% 分阶段 time-speed 子图的统一显示时长（单位：秒）
+% 设为 25，表示每个 PWM 子图横坐标统一显示 0~25 s
+segmentPlotDuration = 25;
+
+% 是否统一分阶段 time-speed 子图的纵坐标范围
+unifySegmentPlotYLimits = true;
+
+% 统一纵坐标时的上下留白比例
+segmentYLimitPaddingRatio = 0.08;
+
+% 分阶段子图是否使用更紧凑的论文排版布局
+compactSegmentFigureLayout = true;
+
+% 更紧凑布局时，是否只保留外侧坐标标签
+% true  -> 左列保留 ylabel，底行保留 xlabel
+% false -> 每个子图都显示完整坐标标签
+showOuterLabelsOnly = true;
+
 % 绘图样式
 lineWidth = 1.1;
 markerSize = 5;
@@ -211,17 +229,47 @@ hold off;
 
 %% ======================== 图 3：按唯一 PWM 汇总的 time-speed 子图 ========================
 
-uniquePwmValues = unique([segments.pwmValue], 'stable');
+uniquePwmValues = sort(unique([segments.pwmValue]));
 numUniquePwms = numel(uniquePwmValues);
+
+segmentYLimits = [];
+if unifySegmentPlotYLimits
+    segmentSpeedMin = min(speedData);
+    segmentSpeedMax = max(speedData);
+    segmentSpeedRange = segmentSpeedMax - segmentSpeedMin;
+
+    if segmentSpeedRange < eps
+        yPadding = max(0.05, 0.1 * max(1, abs(segmentSpeedMax)));
+    else
+        yPadding = segmentYLimitPaddingRatio * segmentSpeedRange;
+    end
+
+    segmentYLimits = [segmentSpeedMin - yPadding, segmentSpeedMax + yPadding];
+end
 
 figure('Name', 'Segmented Time-Speed', 'Color', 'w');
 [numRows, numCols] = calcSubplotLayout(numUniquePwms);
 
+segmentTileLayout = [];
+if exist('tiledlayout', 'file') == 2 || exist('tiledlayout', 'builtin') == 5
+    if compactSegmentFigureLayout
+        segmentTileLayout = tiledlayout(numRows, numCols, 'TileSpacing', 'none', 'Padding', 'compact');
+    else
+        segmentTileLayout = tiledlayout(numRows, numCols, 'TileSpacing', 'compact', 'Padding', 'compact');
+    end
+end
+
 for i = 1:numUniquePwms
     currentPwm = uniquePwmValues(i);
     currentSegments = segments([segments.pwmValue] == currentPwm);
+    currentRow = ceil(i / numCols);
+    currentCol = mod(i - 1, numCols) + 1;
 
-    subplot(numRows, numCols, i);
+    if isempty(segmentTileLayout)
+        subplot(numRows, numCols, i);
+    else
+        nexttile(segmentTileLayout, i);
+    end
     hold on;
 
     for runIndex = 1:numel(currentSegments)
@@ -241,8 +289,38 @@ for i = 1:numUniquePwms
     end
 
     applyThesisAxesStyle();
-    xlabel(xLabelText);
-    ylabel('Speed (m/s)');
+    ax = gca;
+    ax.PositionConstraint = 'innerposition';
+
+    if compactSegmentFigureLayout && showOuterLabelsOnly
+        if currentRow == numRows
+            xlabel(xLabelText);
+        else
+            xlabel('');
+            ax.XTickLabel = [];
+        end
+
+        if currentCol == 1
+            ylabel('Speed (m/s)');
+        else
+            ylabel('');
+            ax.YTickLabel = [];
+        end
+    else
+        xlabel(xLabelText);
+        ylabel('Speed (m/s)');
+    end
+
+    if useRelativeTimeInSegmentPlots
+        xlim([0, segmentPlotDuration]);
+    else
+        currentStartTime = min(arrayfun(@(segmentItem) segmentItem.time(1), currentSegments));
+        xlim([currentStartTime, currentStartTime + segmentPlotDuration]);
+    end
+
+    if unifySegmentPlotYLimits
+        ylim(segmentYLimits);
+    end
 
     if numel(currentSegments) > 1
         title(sprintf('PWM = %.0f (%d runs)', currentPwm, numel(currentSegments)));
@@ -253,7 +331,9 @@ for i = 1:numUniquePwms
     hold off;
 end
 
-if exist('sgtitle', 'file') == 2 || exist('sgtitle', 'builtin') == 5
+if ~isempty(segmentTileLayout)
+    title(segmentTileLayout, '各 PWM 的速度-时间子图');
+elseif exist('sgtitle', 'file') == 2 || exist('sgtitle', 'builtin') == 5
     sgtitle('各 PWM 的速度-时间子图');
 else
     annotation('textbox', [0 0.96 1 0.03], ...
