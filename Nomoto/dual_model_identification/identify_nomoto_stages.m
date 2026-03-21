@@ -7,7 +7,9 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 %   results = identify_nomoto_stages(experimentRoot, opts)
 %
 % 采用模型：
-%   T * dr/dt + r + alpha * r^3 = K * u
+%   T * dr/dt + r + alpha * r^3 = K(u) * u
+%   K(u) = K_pos,  u >= 0
+%   K(u) = K_neg,  u < 0
 %
 % 输入量定义：
 %   u = (right_pwm - left_pwm) / 2
@@ -73,8 +75,14 @@ for i = 1:numel(stageOrder)
     switch stageId
         case 1
             stageResult = identifyStage1K(data, stageFolder, cfg);
-            params.K = stageResult.K;
-            params.SourceK = 'stage1';
+            if isfinite(stageResult.K_pos)
+                params.KPos = stageResult.K_pos;
+                params.SourceKPos = 'stage1';
+            end
+            if isfinite(stageResult.K_neg)
+                params.KNeg = stageResult.K_neg;
+                params.SourceKNeg = 'stage1';
+            end
         case 2
             [stageResult, params] = identifyStage2T(data, params, stageFolder, cfg);
         case 3
@@ -99,7 +107,9 @@ results.summary_files = saveSummaryArtifacts(results, cfg);
 save(cfg.CacheFile, 'results');
 
 fprintf('\n辨识结果汇总：\n');
-fprintf('  K     = %.12g\n', results.final_params.K);
+fprintf('  K+    = %.12g\n', results.final_params.K_pos);
+fprintf('  K-    = %.12g\n', results.final_params.K_neg);
+fprintf('  K_eq  = %.12g\n', results.final_params.K);
 fprintf('  T     = %.12g\n', results.final_params.T);
 fprintf('  alpha = %.12g\n', results.final_params.alpha);
 fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
@@ -136,6 +146,8 @@ cfg.DerivativeTrimSamples = max(0, round(getOption(opts, 'DerivativeTrimSamples'
 cfg.LineWidth = 1.3;
 
 cfg.OverrideK = getNumericOption(opts, 'K', NaN);
+cfg.OverrideKPos = getNumericOptionAliases(opts, {'KPos', 'K_pos', 'KPlus', 'K_plus'}, NaN);
+cfg.OverrideKNeg = getNumericOptionAliases(opts, {'KNeg', 'K_neg', 'KMinus', 'K_minus'}, NaN);
 cfg.OverrideT = getNumericOption(opts, 'T', NaN);
 cfg.OverrideAlpha = getNumericOption(opts, 'alpha', NaN);
 end
@@ -163,11 +175,6 @@ end
 
 if isempty(catalog)
     return;
-end
-
-hasExperimentTests = arrayfun(@(s) contains(lower(s.filePath), 'experiment_tests'), catalog);
-if any(hasExperimentTests)
-    catalog = catalog(hasExperimentTests);
 end
 end
 
@@ -465,15 +472,29 @@ if den <= eps
     error('阶段1的输入幅值过小，无法稳定辨识 K。');
 end
 
-K = sum(uTail .* rTail) / den;
-rTailHat = K * uTail;
-rSteadyHat = K * mean(uTail);
+uTailPos = max(uTail, 0);
+uTailNeg = min(uTail, 0);
+posMask = uTail > 0;
+negMask = uTail < 0;
+
+KPos = fitBranchGain(uTailPos(posMask), rTail(posMask));
+KNeg = fitBranchGain(uTailNeg(negMask), rTail(negMask));
+gainSpec = struct('K_pos', KPos, 'K_neg', KNeg);
+rTailHat = branchWeightedInput(uTail, gainSpec);
+rSteadyHat = mean(rTailHat);
 
 stageResult = struct();
-stageResult.method = 'steady_tail_least_squares';
-stageResult.K = K;
+stageResult.method = 'steady_tail_least_squares_dual_branch_init';
+stageResult.K_pos = KPos;
+stageResult.K_neg = KNeg;
+stageResult.K = equivalentBranchK(KPos, KNeg);
+stageResult.asymmetry_ratio = safeBranchRatio(KNeg, KPos);
 stageResult.tail_sample_count = tailCount;
 stageResult.mean_half_pwm = mean(uTail);
+stageResult.mean_positive_half_pwm = maskedMean(uTail(posMask));
+stageResult.mean_negative_half_pwm = maskedMean(uTail(negMask));
+stageResult.branch_sample_count_pos = nnz(posMask);
+stageResult.branch_sample_count_neg = nnz(negMask);
 stageResult.mean_yaw_rate_deg_s = rad2deg(mean(rTail));
 stageResult.steady_yaw_rate_hat_deg_s = rad2deg(rSteadyHat);
 stageResult.rmse_tail_rad_s = nomoto_utils.rmse(rTail, rTailHat);
@@ -491,7 +512,7 @@ yline(rad2deg(rSteadyHat), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段1 线性稳态关系 K 辨识结果，K = %.6g', K));
+title(sprintf('阶段1 双支路稳态初值，K+ = %.6g，K- = %.6g', KPos, KNeg));
 legend({'实测值', '滤波值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
 hold off;
 
@@ -502,12 +523,12 @@ xFit = linspace(min(uTail), max(uTail), 100).';
 if isscalar(unique(uTail))
     xFit = linspace(min(uTail) - 5, max(uTail) + 5, 100).';
 end
-plot(xFit, rad2deg(K * xFit), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+plot(xFit, rad2deg(branchWeightedInput(xFit, gainSpec)), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
 xlabel('半 PWM 差值');
 ylabel('角速度 (deg/s)');
-title('阶段1 线性稳态尾段样本与最小二乘拟合');
-legend({'尾段样本', 'r = K u'}, 'Location', 'best');
+title('阶段1 双支路稳态尾段样本与最小二乘拟合');
+legend({'尾段样本', 'r = K(u) u'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K'), cfg);
@@ -521,39 +542,37 @@ drdt = data.yawAccelRadS2;
 mask = data.analysisMask;
 
 requireSamples(mask, 8, 'stage 2');
+requireSignedSamples(u(mask), 5, 'stage 2');
 
-stageResult = struct();
-if isfinite(params.K)
-    basis = drdt(mask);
-    rhs = params.K * u(mask) - r(mask);
-    den = sum(basis .* basis);
-    if den <= eps
-        error('阶段2的角速度导数信息过弱，无法稳定辨识 T。');
-    end
-    T = sum(basis .* rhs) / den;
-    stageResult.method = 'sequential_least_squares_known_K';
-else
-    if ~cfg.EnableJointFallback
-        error('阶段2需要已知 K，但当前没有可用的 K，且未启用联合回退辨识。');
-    end
-    A = [u(mask), -drdt(mask)];
-    x = A \ r(mask);
-    params.K = x(1);
-    params.SourceK = 'stage2_joint';
-    T = x(2);
-    stageResult.method = 'joint_least_squares_K_T';
-    stageResult.K_from_joint_fit = params.K;
+uPos = positiveInput(u);
+uNeg = negativeInput(u);
+A = [uPos(mask), uNeg(mask), -drdt(mask)];
+x = A \ r(mask);
+
+params.KPos = x(1);
+params.KNeg = x(2);
+params.T = x(3);
+params.SourceKPos = 'stage2_joint';
+params.SourceKNeg = 'stage2_joint';
+params.SourceT = 'stage2_joint';
+
+if params.T <= 0
+    error('阶段2联合辨识得到的 T <= 0，无法用于后续仿真。');
 end
 
-params.T = T;
-params.SourceT = 'stage2';
-
-rModel = nomoto_utils.simulateLinearNomoto(data.timeS, u, params.K, T, r(1));
+gainSpec = branchGainSpec(params);
+rModel = nomoto_utils.simulateLinearNomoto(data.timeS, u, gainSpec, params.T, r(1));
 headingModelDeg = cumtrapz(data.timeS, rad2deg(rModel));
+weightedInput = branchWeightedInput(u(mask), gainSpec);
 
-stageResult.K = params.K;
-stageResult.T = T;
-stageResult.equation_rmse_rad_s = nomoto_utils.rmse(r(mask), params.K * u(mask) - T * drdt(mask));
+stageResult = struct();
+stageResult.method = 'joint_least_squares_K_pos_K_neg_T';
+stageResult.K_pos = params.KPos;
+stageResult.K_neg = params.KNeg;
+stageResult.K = equivalentBranchK(params.KPos, params.KNeg);
+stageResult.asymmetry_ratio = safeBranchRatio(params.KNeg, params.KPos);
+stageResult.T = params.T;
+stageResult.equation_rmse_rad_s = nomoto_utils.rmse(r(mask), weightedInput - params.T * drdt(mask));
 stageResult.yaw_rate_rmse_deg_s = rad2deg(nomoto_utils.rmse(r, rModel));
 stageResult.yaw_rate_r2 = nomoto_utils.rsquared(r, rModel);
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingModelDeg);
@@ -569,7 +588,8 @@ plot(data.timeS, rad2deg(rModel), '-', 'Color', style.fitColor, 'LineWidth', 1.2
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段2 线性模型 T 辨识结果，K = %.6g，T = %.6g', params.K, T));
+title(sprintf('阶段2 双支路线性辨识，K+ = %.6g，K- = %.6g，T = %.6g', ...
+    params.KPos, params.KNeg, params.T));
 legend({'实测值', '线性模型'}, 'Location', 'best');
 hold off;
 
@@ -595,56 +615,49 @@ drdt = data.yawAccelRadS2;
 mask = data.analysisMask;
 
 requireSamples(mask, 8, 'stage 3');
+requireSignedSamples(u(mask), 5, 'stage 3');
 
 stageResult = struct();
-missingK = ~isfinite(params.K);
-missingT = ~isfinite(params.T);
-
-if ~missingK && ~missingT
+hasKnownBranches = isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T);
+if hasKnownBranches
     basis = r(mask) .^ 3;
-    rhs = params.K * u(mask) - r(mask) - params.T * drdt(mask);
+    rhs = branchWeightedInput(u(mask), params) - r(mask) - params.T * drdt(mask);
     den = sum(basis .* basis);
     if den <= eps
         error('阶段3中的三次项信息过弱，无法稳定辨识 alpha。');
     end
     alpha = sum(basis .* rhs) / den;
-    stageResult.method = 'sequential_least_squares_known_K_T';
+    stageResult.method = 'sequential_least_squares_known_K_pos_K_neg_T';
 elseif ~cfg.EnableJointFallback
     error('阶段3缺少前置参数，且未启用联合回退辨识。');
-elseif ~missingK && missingT
-    A = [drdt(mask), r(mask) .^ 3];
-    x = A \ (params.K * u(mask) - r(mask));
-    params.T = x(1);
-    alpha = x(2);
-    params.SourceT = 'stage3_joint';
-    stageResult.method = 'joint_least_squares_T_alpha_with_known_K';
-elseif missingK && ~missingT
-    A = [u(mask), -r(mask) .^ 3];
-    x = A \ (r(mask) + params.T * drdt(mask));
-    params.K = x(1);
-    alpha = x(2);
-    params.SourceK = 'stage3_joint';
-    stageResult.method = 'joint_least_squares_K_alpha_with_known_T';
 else
-    A = [u(mask), -drdt(mask), -r(mask) .^ 3];
+    uPos = positiveInput(u);
+    uNeg = negativeInput(u);
+    A = [uPos(mask), uNeg(mask), -drdt(mask), -(r(mask) .^ 3)];
     x = A \ r(mask);
-    params.K = x(1);
-    params.T = x(2);
-    alpha = x(3);
-    params.SourceK = 'stage3_joint';
+    params.KPos = x(1);
+    params.KNeg = x(2);
+    params.T = x(3);
+    alpha = x(4);
+    params.SourceKPos = 'stage3_joint';
+    params.SourceKNeg = 'stage3_joint';
     params.SourceT = 'stage3_joint';
-    stageResult.method = 'joint_least_squares_K_T_alpha';
+    stageResult.method = 'joint_least_squares_K_pos_K_neg_T_alpha';
 end
 
 params.alpha = alpha;
 params.SourceAlpha = 'stage3';
 
-rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, params.K, params.T, alpha, r(1));
+gainSpec = branchGainSpec(params);
+rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, gainSpec, params.T, alpha, r(1));
 headingNonlinearDeg = cumtrapz(data.timeS, rad2deg(rNonlinear));
 
-stageResult.K = params.K;
+stageResult.K_pos = params.KPos;
+stageResult.K_neg = params.KNeg;
+stageResult.K = equivalentBranchK(params.KPos, params.KNeg);
 stageResult.T = params.T;
 stageResult.alpha = alpha;
+stageResult.asymmetry_ratio = safeBranchRatio(params.KNeg, params.KPos);
 stageResult.yaw_rate_rmse_deg_s = rad2deg(nomoto_utils.rmse(r, rNonlinear));
 stageResult.yaw_rate_r2 = nomoto_utils.rsquared(r, rNonlinear);
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonlinearDeg);
@@ -660,8 +673,8 @@ plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth',
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段3 alpha 辨识结果，K = %.6g，T = %.6g，alpha = %.6g', ...
-    params.K, params.T, alpha));
+title(sprintf('阶段3 双支路 alpha 辨识，K+ = %.6g，K- = %.6g，T = %.6g，alpha = %.6g', ...
+    params.KPos, params.KNeg, params.T, alpha));
 legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -681,24 +694,30 @@ end
 
 function stageResult = validateStage4(data, params, stageFolder, cfg)
 style = plotStyle();
-if ~(isfinite(params.K) && isfinite(params.T) && isfinite(params.alpha))
-    error('阶段4非线性模型验证需要已知 K、T、alpha。');
+if ~(isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T) && isfinite(params.alpha))
+    error('阶段4双支路非线性模型验证需要已知 K+、K-、T、alpha。');
 end
 
 u = data.uPwm;
 r0 = data.yawRateRadSFiltered(1);
-rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, params.K, params.T, params.alpha, r0);
+gainSpec = branchGainSpec(params);
+rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, gainSpec, params.T, params.alpha, r0);
 headingNonlinearDeg = cumtrapz(data.timeS, rad2deg(rNonlinear));
+headingErrorDeg = data.headingRelDeg - headingNonlinearDeg;
 
 stageResult = struct();
 stageResult.method = 'model_validation';
-stageResult.K = params.K;
+stageResult.K_pos = params.KPos;
+stageResult.K_neg = params.KNeg;
+stageResult.K = equivalentBranchK(params.KPos, params.KNeg);
 stageResult.T = params.T;
 stageResult.alpha = params.alpha;
+stageResult.asymmetry_ratio = safeBranchRatio(params.KNeg, params.KPos);
 stageResult.yaw_rate_rmse_deg_s = rad2deg(nomoto_utils.rmse(data.yawRateRadSFiltered, rNonlinear));
 stageResult.yaw_rate_r2 = nomoto_utils.rsquared(data.yawRateRadSFiltered, rNonlinear);
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingNonlinearDeg);
+stageResult.heading_error_max_abs_deg = max(abs(headingErrorDeg));
 
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4模型验证');
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
@@ -726,6 +745,19 @@ legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage4_validation'), cfg);
+
+figErr = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4航向角误差');
+plot(data.timeS, headingErrorDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
+hold on;
+yline(0, '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
+applyAxesStyle(style);
+xlabel('时间 (s)');
+ylabel('航向角误差 (deg)');
+title(sprintf('阶段4 航向角误差（实测 - 模型），RMSE = %.3f deg', stageResult.heading_rmse_deg));
+legend({'航向角误差', '零误差参考线'}, 'Location', 'best');
+hold off;
+
+stageResult.heading_error_figure = saveFigureBundle(figErr, fullfile(stageFolder, 'stage4_heading_error'), cfg);
 end
 
 function saved = saveSummaryArtifacts(results, cfg)
@@ -744,6 +776,8 @@ summaryLines = {
     sprintf('生成时间：%s', results.generated_at)
     sprintf('搜索目录：%s', results.search_root)
     sprintf('输出目录：%s', results.output_root)
+    sprintf('K+ 参数：%.12g', results.final_params.K_pos)
+    sprintf('K- 参数：%.12g', results.final_params.K_neg)
     sprintf('K 参数：%.12g', results.final_params.K)
     sprintf('T 参数：%.12g', results.final_params.T)
     sprintf('alpha 参数：%.12g', results.final_params.alpha)
@@ -765,33 +799,60 @@ end
 
 function params = initializeParams(cfg, cached)
 params = struct();
-params.K = NaN;
+params.KPos = NaN;
+params.KNeg = NaN;
 params.T = NaN;
 params.alpha = NaN;
-params.SourceK = '';
+params.SourceKPos = '';
+params.SourceKNeg = '';
 params.SourceT = '';
 params.SourceAlpha = '';
 
 if ~isempty(cached)
     if isfield(cached, 'final_params')
-        if isfield(cached.final_params, 'K')
-            params.K = cached.final_params.K;
-            params.SourceK = 'cache';
+        finalParams = cached.final_params;
+        if isfield(finalParams, 'K_pos')
+            params.KPos = finalParams.K_pos;
+            params.SourceKPos = 'cache';
         end
-        if isfield(cached.final_params, 'T')
-            params.T = cached.final_params.T;
+        if isfield(finalParams, 'K_neg')
+            params.KNeg = finalParams.K_neg;
+            params.SourceKNeg = 'cache';
+        end
+        if isfield(finalParams, 'K') && isfinite(finalParams.K)
+            if ~isfinite(params.KPos)
+                params.KPos = finalParams.K;
+                params.SourceKPos = 'cache_legacy';
+            end
+            if ~isfinite(params.KNeg)
+                params.KNeg = finalParams.K;
+                params.SourceKNeg = 'cache_legacy';
+            end
+        end
+        if isfield(finalParams, 'T')
+            params.T = finalParams.T;
             params.SourceT = 'cache';
         end
-        if isfield(cached.final_params, 'alpha')
-            params.alpha = cached.final_params.alpha;
+        if isfield(finalParams, 'alpha')
+            params.alpha = finalParams.alpha;
             params.SourceAlpha = 'cache';
         end
     end
 end
 
 if isfinite(cfg.OverrideK)
-    params.K = cfg.OverrideK;
-    params.SourceK = 'override';
+    params.KPos = cfg.OverrideK;
+    params.KNeg = cfg.OverrideK;
+    params.SourceKPos = 'override_shared';
+    params.SourceKNeg = 'override_shared';
+end
+if isfinite(cfg.OverrideKPos)
+    params.KPos = cfg.OverrideKPos;
+    params.SourceKPos = 'override';
+end
+if isfinite(cfg.OverrideKNeg)
+    params.KNeg = cfg.OverrideKNeg;
+    params.SourceKNeg = 'override';
 end
 if isfinite(cfg.OverrideT)
     params.T = cfg.OverrideT;
@@ -820,12 +881,85 @@ end
 
 function out = paramsToStruct(params)
 out = struct();
-out.K = params.K;
+out.K_pos = params.KPos;
+out.K_neg = params.KNeg;
+out.K = equivalentBranchK(params.KPos, params.KNeg);
 out.T = params.T;
 out.alpha = params.alpha;
-out.K_source = params.SourceK;
+out.K_source = combinedSourceText(params.SourceKPos, params.SourceKNeg);
+out.K_pos_source = params.SourceKPos;
+out.K_neg_source = params.SourceKNeg;
 out.T_source = params.SourceT;
 out.alpha_source = params.SourceAlpha;
+out.model_variant = 'dual_branch_gain';
+end
+
+function value = fitBranchGain(uBranch, rBranch)
+if isempty(uBranch)
+    value = NaN;
+    return;
+end
+
+den = sum(uBranch .* uBranch);
+if den <= eps
+    value = NaN;
+    return;
+end
+value = sum(uBranch .* rBranch) / den;
+end
+
+function gainSpec = branchGainSpec(params)
+gainSpec = struct('K_pos', params.KPos, 'K_neg', params.KNeg);
+end
+
+function weighted = branchWeightedInput(u, gainSpec)
+weighted = nomoto_utils.applySignedGain(u, gainSpec);
+end
+
+function value = equivalentBranchK(KPos, KNeg)
+finiteValues = [KPos, KNeg];
+finiteValues = finiteValues(isfinite(finiteValues));
+if isempty(finiteValues)
+    value = NaN;
+else
+    value = mean(finiteValues);
+end
+end
+
+function value = safeBranchRatio(numerator, denominator)
+if ~(isfinite(numerator) && isfinite(denominator) && abs(denominator) > eps)
+    value = NaN;
+else
+    value = numerator / denominator;
+end
+end
+
+function value = maskedMean(values)
+if isempty(values)
+    value = NaN;
+else
+    value = mean(values);
+end
+end
+
+function textValue = combinedSourceText(sourcePos, sourceNeg)
+sourcePos = char(string(sourcePos));
+sourceNeg = char(string(sourceNeg));
+if isempty(sourcePos) && isempty(sourceNeg)
+    textValue = '';
+elseif strcmp(sourcePos, sourceNeg)
+    textValue = sourcePos;
+else
+    textValue = sprintf('K_pos:%s; K_neg:%s', sourcePos, sourceNeg);
+end
+end
+
+function uPos = positiveInput(u)
+uPos = max(columnVector(u), 0);
+end
+
+function uNeg = negativeInput(u)
+uNeg = min(columnVector(u), 0);
 end
 
 function headingRelDeg = buildRelativeHeading(headingDeg, relativeHeadingDeg, accumTurnDeg, yawRateDegS, timeS)
@@ -862,6 +996,15 @@ end
 function requireSamples(mask, minCount, stageName)
 if nnz(mask) < minCount
     error('%s 可用有效样本不足，无法完成辨识。', stageName);
+end
+end
+
+function requireSignedSamples(u, minCount, stageName)
+u = columnVector(u);
+posCount = nnz(u > 0);
+negCount = nnz(u < 0);
+if posCount < minCount || negCount < minCount
+    error('%s 正负两个支路的有效样本不足，无法稳定辨识 K+ / K-。', stageName);
 end
 end
 
@@ -932,6 +1075,20 @@ value = double(value);
 if ~isscalar(value)
     error('选项 %s 必须为标量。', fieldName);
 end
+end
+
+function value = getNumericOptionAliases(opts, fieldNames, defaultValue)
+for i = 1:numel(fieldNames)
+    fieldName = fieldNames{i};
+    if isfield(opts, fieldName) && ~isempty(opts.(fieldName))
+        value = double(opts.(fieldName));
+        if ~isscalar(value)
+            error('选项 %s 必须为标量。', fieldName);
+        end
+        return;
+    end
+end
+value = defaultValue;
 end
 
 function ensureFolder(folderPath)

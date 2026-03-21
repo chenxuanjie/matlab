@@ -4,4 +4,5 @@ speed_pwm/origin_experiment_test/
 speed_pwm/example_csv
 Nomoto/experiment_tests/
 Nomoto/origin_experiment_test/
-Nomoto/results/
+Nomoto/single_model_identification/results/
+Nomoto/dual_model_identification/results/
