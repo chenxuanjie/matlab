@@ -4,13 +4,13 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 % 运行模式：
 % 'identify' -> 完整辨识（stage1 ~ stage4）
 % 'validate' -> 只做 stage4 验证
-runMode = 'validate';
+runMode = 'identify';
 %
 % 验证模式参数（仅 runMode = 'validate' 时生效）：
 validateKPos = 0.00615955;
-validateKNeg = 0.00705955;
-validateT = 0.465642;
-validateAlpha =  0.225721;
+validateKNeg = -0.00615955;
+validateT = NaN;
+validateAlpha = NaN;
 %
 % 说明：
 % 1. 默认数据目录：优先读取 Nomoto/experiment_tests
@@ -306,16 +306,14 @@ end
 experimentRoot = fullfile(cfg.ProjectRoot, 'experiment_tests');
 originRoot = fullfile(cfg.ProjectRoot, 'origin_experiment_test');
 
-requiredStageIds = getRequestedStageIds(cfg);
-
 experimentCatalog = collectStageCsvFiles(experimentRoot);
-if hasRequiredStageSet(experimentCatalog, requiredStageIds)
+if hasCompleteStageSet(experimentCatalog)
     catalog = experimentCatalog;
     resolvedSearchRoot = experimentRoot;
     return;
 end
 
-fprintf('未在 experiment_tests 中找到当前模式所需的阶段 CSV，回退到 origin_experiment_test。\n');
+fprintf('未在 experiment_tests 中找到可用于辨识的完整阶段 CSV，回退到 origin_experiment_test。\n');
 
 originCatalog = collectStageCsvFiles(originRoot);
 if ~isempty(originCatalog)
@@ -349,14 +347,14 @@ for i = 1:numel(entries)
 end
 end
 
-function tf = hasRequiredStageSet(catalog, stageIds)
+function tf = hasCompleteStageSet(catalog)
 if isempty(catalog)
     tf = false;
     return;
 end
 
 stages = unique([catalog.stageId]);
-tf = all(ismember(stageIds, stages));
+tf = all(ismember(1:4, stages));
 end
 
 function meta = inspectStageCsv(filePath, dirEntry)

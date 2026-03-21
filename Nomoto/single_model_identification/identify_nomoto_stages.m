@@ -1,4 +1,38 @@
 function results = identify_nomoto_stages(experimentRoot, opts)
+% ======================== 输入配置区（可直接修改） ========================
+%
+% 运行模式：
+% 'identify' -> 完整辨识（stage1 ~ stage4）
+% 'validate' -> 只做 stage4 验证
+runMode = 'identify';
+%
+% 验证模式参数（仅 runMode = 'validate' 时生效）：
+% validateK:
+%   单模型增益 K
+%   对应模型：T * dr/dt + r + alpha * r^3 = K * u
+%   例子：0.0061
+validateK = NaN;
+%
+% validateT:
+%   单模型时间常数 T
+%   单位：秒，T 越大响应越慢
+%   例子：0.46
+validateT = NaN;
+%
+% validateAlpha:
+%   单模型三次非线性参数 alpha
+%   影响大角速度时的非线性程度
+%   例子：0.22 或 -0.59（按你的辨识结果填写）
+validateAlpha = NaN;
+%
+% 说明：
+% 1. 默认数据目录：优先读取 Nomoto/experiment_tests
+%    如果找不到完整阶段数据，会打印提示后回退到 origin_experiment_test
+% 2. 直接点击运行时，会使用上面这组配置
+% 3. 如果从命令行传入 experimentRoot / opts，则外部传入值优先
+%
+% ======================== 旧说明区（忽略） ========================
+if false
 %IDENTIFY_NOMOTO_STAGES 按阶段自动辨识 K、T、alpha 参数。
 %
 % 用法：
@@ -14,11 +48,101 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 %
 % 其中正值表示左电机减小、右电机增大。
 
+% ======================== 常改项（优先看这里） ========================
+% 1. 运行模式：
+%    opts.Mode = 'identify'  -> 按 stage1~4 做完整辨识
+%    opts.Mode = 'validate'  -> 只读取 stage4，用给定参数做验证
+%
+% 2. 数据目录：
+%    experimentRoot 留空时，默认先读 Nomoto/experiment_tests；
+%    如果 experiment_tests 中没有可用数据，会打印提示后回退到 origin_experiment_test。
+%
+% 3. 验证模式必填参数（单模型）：
+%    opts.K
+%    opts.T
+%    opts.alpha
+%
+% 4. 其他常改项：
+%    opts.ShowFigures      -> true/false，是否显示图
+%    opts.OutputRoot       -> 结果输出目录
+%    opts.RateFilterWindow -> 角速度移动平均窗口长度
+%
+% 5. 常用示例：
+%    results = identify_nomoto_stages('', struct('Mode', 'identify', 'ShowFigures', false));
+%    results = identify_nomoto_stages('', struct('Mode', 'validate', ...
+%        'ShowFigures', true, 'K', 0.0061, 'T', 0.46, 'alpha', 0.22));
+% ======================== 输入配置区（可直接修改） ========================
+%
+% 运行模式：
+% 'identify' -> 完整辨识（stage1 ~ stage4）
+% 'validate' -> 只做 stage4 验证，使用下面手填参数
+runMode = 'identify';
+%
+% 数据来源模式：
+% 'auto' -> 默认先读 Nomoto/experiment_tests；找不到完整数据再回退到 origin_experiment_test
+% 'path' -> 使用下面 dataPath 指定的目录
+dataSourceMode = 'auto';
+%
+% 当 dataSourceMode = 'path' 时生效：填写实验数据目录
+dataPath = '';
+%
+% 是否显示图窗
+showFigures = true;
+%
+% 是否额外保存 MATLAB 的 .fig 文件
+saveMatFigures = false;
+%
+% 输出目录。留空表示使用脚本同目录下的 results 文件夹
+outputRoot = '';
+%
+% 角速度移动平均滤波窗口长度。越大越平滑，但边沿会更钝
+rateFilterWindow = 7;
+%
+% stage1 尾段比例与最少样本数
+stage1TailFraction = 0.30;
+stage1TailMinSamples = 30;
+%
+% 有效输入阈值与导数边界裁剪样本数
+minInputAbs = 1.0;
+derivativeTrimSamples = 1;
+%
+% 是否允许联合回退辨识
+enableJointFallback = true;
+%
+% ======================== 验证模式参数区（仅 validate 生效） ========================
+% 单模型验证参数：直接填 K / T / alpha
+validateK = NaN;
+validateT = NaN;
+validateAlpha = NaN;
+%
+% 说明：
+% 1. 直接点击运行时，脚本会使用上面这组配置。
+% 2. 如果你从命令行传入 experimentRoot / opts，则外部传入值优先。
+end
+
 if nargin < 1
     experimentRoot = '';
 end
 if nargin < 2 || isempty(opts)
     opts = struct();
+    opts.Mode = runMode;
+    opts.ShowFigures = true;
+    opts.SaveMatFigures = false;
+    opts.RateFilterWindow = 7;
+    opts.Stage1TailFraction = 0.30;
+    opts.Stage1TailMinSamples = 30;
+    opts.MinInputAbs = 1.0;
+    opts.DerivativeTrimSamples = 1;
+    opts.EnableJointFallback = true;
+    if isfinite(validateK)
+        opts.K = validateK;
+    end
+    if isfinite(validateT)
+        opts.T = validateT;
+    end
+    if isfinite(validateAlpha)
+        opts.alpha = validateAlpha;
+    end
 end
 
 scriptDir = fileparts(mfilename('fullpath'));
@@ -35,7 +159,8 @@ if isempty(catalog)
         '请检查 experiment_tests 文件夹，或显式传入搜索路径。']);
 end
 
-selectedFiles = selectLatestStageFiles(catalog);
+requestedStageIds = getRequestedStageIds(cfg);
+selectedFiles = selectLatestStageFiles(catalog, requestedStageIds);
 if isempty(selectedFiles)
     error('没有选中 stage 1-4 的 CSV 文件，无法进行辨识。');
 end
@@ -45,11 +170,16 @@ for i = 1:numel(selectedFiles)
     fprintf('  阶段 %d -> %s\n', selectedFiles(i).stageId, selectedFiles(i).filePath);
 end
 
-cached = loadLatestCache(cfg.CacheFile);
-params = initializeParams(cfg, cached);
+if isValidationMode(cfg)
+    params = initializeValidationParams(cfg);
+else
+    cached = loadLatestCache(cfg.CacheFile);
+    params = initializeParams(cfg, cached);
+end
 
 results = struct();
 results.generated_at = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
+results.run_mode = cfg.Mode;
 results.search_root = cfg.SearchRoot;
 results.output_root = cfg.RunOutputRoot;
 results.selected_files = struct([]);
@@ -99,7 +229,9 @@ results.final_params = paramsToStruct(params);
 results.stage_order = stageOrder;
 results.summary_files = saveSummaryArtifacts(results, cfg);
 
-save(cfg.CacheFile, 'results');
+if isIdentifyMode(cfg)
+    save(cfg.CacheFile, 'results');
+end
 
 fprintf('\n辨识结果汇总：\n');
 fprintf('  K     = %.12g\n', results.final_params.K);
@@ -131,16 +263,26 @@ cfg.RunStamp = char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'));
 cfg.RunOutputRoot = fullfile(cfg.OutputRoot, ['run_' cfg.RunStamp]);
 cfg.CacheFile = fullfile(cfg.OutputRoot, 'nomoto_latest_results.mat');
 
+% 常改 1：运行模式。'identify' 为完整辨识，'validate' 为只做 stage4 验证。
+cfg.Mode = parseRunMode(getOption(opts, 'Mode', 'identify'));
+
+% 常改 2：是否显示图窗。
 cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', true));
+% 常改 3：是否额外保存 MATLAB 的 .fig 文件。
 cfg.SaveMatFigures = logical(getOption(opts, 'SaveMatFigures', false));
+% 常改 4：缺少前置参数时，是否允许联合回退辨识。
 cfg.EnableJointFallback = logical(getOption(opts, 'EnableJointFallback', true));
+% 常改 5：角速度滤波窗口。越大越平滑，但会更钝化边沿。
 cfg.RateFilterWindow = max(1, round(getOption(opts, 'RateFilterWindow', 7)));
+% 常改 6：stage1 尾段取样比例和最少样本数。
 cfg.Stage1TailFraction = getOption(opts, 'Stage1TailFraction', 0.30);
 cfg.Stage1TailMinSamples = max(10, round(getOption(opts, 'Stage1TailMinSamples', 30)));
+% 常改 7：有效输入阈值与导数边界裁剪。
 cfg.MinInputAbs = getOption(opts, 'MinInputAbs', 1.0);
 cfg.DerivativeTrimSamples = max(0, round(getOption(opts, 'DerivativeTrimSamples', 1)));
 cfg.LineWidth = 1.3;
 
+% 验证模式常改 8：直接在 opts 里填 K/T/alpha。
 cfg.OverrideK = getNumericOption(opts, 'K', NaN);
 cfg.OverrideT = getNumericOption(opts, 'T', NaN);
 cfg.OverrideAlpha = getNumericOption(opts, 'alpha', NaN);
@@ -159,14 +301,16 @@ end
 experimentRoot = fullfile(cfg.ProjectRoot, 'experiment_tests');
 originRoot = fullfile(cfg.ProjectRoot, 'origin_experiment_test');
 
+requiredStageIds = getRequestedStageIds(cfg);
+
 experimentCatalog = collectStageCsvFiles(experimentRoot);
-if hasCompleteStageSet(experimentCatalog)
+if hasRequiredStageSet(experimentCatalog, requiredStageIds)
     catalog = experimentCatalog;
     resolvedSearchRoot = experimentRoot;
     return;
 end
 
-fprintf('未在 experiment_tests 中找到可用于辨识的完整阶段 CSV，回退到 origin_experiment_test。\n');
+fprintf('未在 experiment_tests 中找到当前模式所需的阶段 CSV，回退到 origin_experiment_test。\n');
 
 originCatalog = collectStageCsvFiles(originRoot);
 if ~isempty(originCatalog)
@@ -200,14 +344,14 @@ for i = 1:numel(entries)
 end
 end
 
-function tf = hasCompleteStageSet(catalog)
+function tf = hasRequiredStageSet(catalog, stageIds)
 if isempty(catalog)
     tf = false;
     return;
 end
 
 stages = unique([catalog.stageId]);
-tf = all(ismember(1:4, stages));
+tf = all(ismember(stageIds, stages));
 end
 
 function meta = inspectStageCsv(filePath, dirEntry)
@@ -266,9 +410,13 @@ meta.timestampValue = timestampValue;
 meta.timestampLabel = timestampLabel;
 end
 
-function selected = selectLatestStageFiles(catalog)
+function selected = selectLatestStageFiles(catalog, stageIds)
+if nargin < 2 || isempty(stageIds)
+    stageIds = 1:4;
+end
+
 selected = struct([]);
-for stageId = 1:4
+for stageId = stageIds
     matches = catalog([catalog.stageId] == stageId);
     if isempty(matches)
         continue;
@@ -280,6 +428,22 @@ for stageId = 1:4
         selected(end + 1) = matches(idx); %#ok<AGROW>
     end
 end
+end
+
+function stageIds = getRequestedStageIds(cfg)
+if isValidationMode(cfg)
+    stageIds = 4;
+else
+    stageIds = 1:4;
+end
+end
+
+function tf = isIdentifyMode(cfg)
+tf = strcmp(cfg.Mode, 'identify');
+end
+
+function tf = isValidationMode(cfg)
+tf = strcmp(cfg.Mode, 'validate');
 end
 
 function data = readStageData(filePath, cfg)
@@ -857,6 +1021,20 @@ if isfinite(cfg.OverrideAlpha)
 end
 end
 
+function params = initializeValidationParams(cfg)
+params = struct();
+params.K = cfg.OverrideK;
+params.T = cfg.OverrideT;
+params.alpha = cfg.OverrideAlpha;
+params.SourceK = 'validate_input';
+params.SourceT = 'validate_input';
+params.SourceAlpha = 'validate_input';
+
+if ~(isfinite(params.K) && isfinite(params.T) && isfinite(params.alpha))
+    error('验证模式要求显式提供 K、T、alpha。');
+end
+end
+
 function cached = loadLatestCache(cacheFile)
 cached = struct([]);
 if ~isfile(cacheFile)
@@ -985,6 +1163,18 @@ end
 value = double(value);
 if ~isscalar(value)
     error('选项 %s 必须为标量。', fieldName);
+end
+end
+
+function modeText = parseRunMode(rawMode)
+modeText = lower(strtrim(char(string(rawMode))));
+switch modeText
+    case {'identify', 'identification', 'fit', '辨识', '杈ㄨ瘑'}
+        modeText = 'identify';
+    case {'validate', 'validation', 'verify', '验证', '楠岃瘉'}
+        modeText = 'validate';
+    otherwise
+        error('Mode only supports identify / validate.');
 end
 end
 
