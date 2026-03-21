@@ -26,7 +26,10 @@ cfg = buildConfig(scriptDir, experimentRoot, opts);
 ensureFolder(cfg.OutputRoot);
 ensureFolder(cfg.RunOutputRoot);
 
-catalog = discoverStageCsvFiles(cfg);
+ [catalog, resolvedSearchRoot] = discoverStageCsvFiles(cfg);
+if ~isempty(resolvedSearchRoot)
+    cfg.SearchRoot = resolvedSearchRoot;
+end
 if isempty(catalog)
     error(['未找到可用于辨识的阶段 CSV 文件。' ...
         '请检查 experiment_tests 文件夹，或显式传入搜索路径。']);
@@ -108,10 +111,13 @@ end
 function cfg = buildConfig(scriptDir, experimentRoot, opts)
 cfg = struct();
 cfg.ScriptDir = scriptDir;
+cfg.ProjectRoot = fileparts(scriptDir);
 
 if nargin < 2 || isempty(experimentRoot)
-    cfg.SearchRoot = fileparts(scriptDir);
+    cfg.UseExplicitSearchRoot = false;
+    cfg.SearchRoot = cfg.ProjectRoot;
 else
+    cfg.UseExplicitSearchRoot = true;
     cfg.SearchRoot = char(string(experimentRoot));
 end
 
@@ -140,10 +146,42 @@ cfg.OverrideT = getNumericOption(opts, 'T', NaN);
 cfg.OverrideAlpha = getNumericOption(opts, 'alpha', NaN);
 end
 
-function catalog = discoverStageCsvFiles(cfg)
-entries = dir(fullfile(cfg.SearchRoot, '**', '*.csv'));
+function [catalog, resolvedSearchRoot] = discoverStageCsvFiles(cfg)
 catalog = struct([]);
+resolvedSearchRoot = '';
 
+if cfg.UseExplicitSearchRoot
+    catalog = collectStageCsvFiles(cfg.SearchRoot);
+    resolvedSearchRoot = cfg.SearchRoot;
+    return;
+end
+
+experimentRoot = fullfile(cfg.ProjectRoot, 'experiment_tests');
+originRoot = fullfile(cfg.ProjectRoot, 'origin_experiment_test');
+
+experimentCatalog = collectStageCsvFiles(experimentRoot);
+if hasCompleteStageSet(experimentCatalog)
+    catalog = experimentCatalog;
+    resolvedSearchRoot = experimentRoot;
+    return;
+end
+
+fprintf('未在 experiment_tests 中找到可用于辨识的完整阶段 CSV，回退到 origin_experiment_test。\n');
+
+originCatalog = collectStageCsvFiles(originRoot);
+if ~isempty(originCatalog)
+    catalog = originCatalog;
+    resolvedSearchRoot = originRoot;
+end
+end
+
+function catalog = collectStageCsvFiles(searchRoot)
+catalog = struct([]);
+if ~isfolder(searchRoot)
+    return;
+end
+
+entries = dir(fullfile(searchRoot, '**', '*.csv'));
 if isempty(entries)
     return;
 end
@@ -160,15 +198,16 @@ for i = 1:numel(entries)
         catalog(end + 1) = meta; %#ok<AGROW>
     end
 end
+end
 
+function tf = hasCompleteStageSet(catalog)
 if isempty(catalog)
+    tf = false;
     return;
 end
 
-hasExperimentTests = arrayfun(@(s) contains(lower(s.filePath), 'experiment_tests'), catalog);
-if any(hasExperimentTests)
-    catalog = catalog(hasExperimentTests);
-end
+stages = unique([catalog.stageId]);
+tf = all(ismember(1:4, stages));
 end
 
 function meta = inspectStageCsv(filePath, dirEntry)
