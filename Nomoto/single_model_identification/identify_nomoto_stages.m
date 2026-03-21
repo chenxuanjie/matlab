@@ -6,6 +6,11 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 % 'validate' -> 只做 stage4 验证
 runMode = 'identify';
 %
+% 是否启用角速度滤波：
+% true  -> 先对 yaw_rate 做移动平均，再参与最小二乘拟合
+% false -> 直接使用原始 yaw_rate 参与最小二乘拟合
+useRateFilter = false;
+%
 % 验证模式参数（仅 runMode = 'validate' 时生效）：
 % validateK:
 %   单模型增益 K
@@ -126,6 +131,7 @@ end
 if nargin < 2 || isempty(opts)
     opts = struct();
     opts.Mode = runMode;
+    opts.EnableRateFilter = useRateFilter;
     opts.ShowFigures = true;
     opts.SaveMatFigures = false;
     opts.RateFilterWindow = 7;
@@ -272,6 +278,8 @@ cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', true));
 cfg.SaveMatFigures = logical(getOption(opts, 'SaveMatFigures', false));
 % 常改 4：缺少前置参数时，是否允许联合回退辨识。
 cfg.EnableJointFallback = logical(getOption(opts, 'EnableJointFallback', true));
+% 常改 5：是否启用角速度移动平均滤波。
+cfg.EnableRateFilter = logical(getOption(opts, 'EnableRateFilter', true));
 % 常改 5：角速度滤波窗口。越大越平滑，但会更钝化边沿。
 cfg.RateFilterWindow = max(1, round(getOption(opts, 'RateFilterWindow', 7)));
 % 常改 6：stage1 尾段取样比例和最少样本数。
@@ -525,7 +533,11 @@ uPwm = 0.5 * (rightPwm - leftPwm);
 uPwm = columnVector(uPwm);
 
 yawRateRadS = deg2rad(columnVector(yawRateDegS));
-yawRateRadSFiltered = movmean(yawRateRadS, cfg.RateFilterWindow, 'Endpoints', 'shrink');
+if cfg.EnableRateFilter
+    yawRateRadSFiltered = movmean(yawRateRadS, cfg.RateFilterWindow, 'Endpoints', 'shrink');
+else
+    yawRateRadSFiltered = yawRateRadS;
+end
 if numel(timeS) >= 3
     yawAccelRadS2 = gradient(yawRateRadSFiltered, timeS);
 else

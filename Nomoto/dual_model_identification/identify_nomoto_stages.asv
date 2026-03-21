@@ -4,13 +4,18 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 % 运行模式：
 % 'identify' -> 完整辨识（stage1 ~ stage4）
 % 'validate' -> 只做 stage4 验证
-runMode = 'identify';
+runMode = 'validate';
+%
+% 是否启用角速度滤波：
+% true  -> 先对 yaw_rate 做移动平均，再参与最小二乘拟合
+% false -> 直接使用原始 yaw_rate 参与最小二乘拟合
+useRateFilter = ;
 %
 % 验证模式参数（仅 runMode = 'validate' 时生效）：
 validateKPos = 0.00615955;
-validateKNeg = -0.00615955;
-validateT = NaN;
-validateAlpha = NaN;
+validateKNeg = 0.00705955;
+validateT = 0.465642;
+validateAlpha =  0.225721;
 %
 % 说明：
 % 1. 默认数据目录：优先读取 Nomoto/experiment_tests
@@ -118,6 +123,7 @@ end
 if nargin < 2 || isempty(opts)
     opts = struct();
     opts.Mode = runMode;
+    opts.EnableRateFilter = useRateFilter;
     opts.ShowFigures = true;
     opts.SaveMatFigures = false;
     opts.RateFilterWindow = 7;
@@ -275,6 +281,8 @@ cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', true));
 cfg.SaveMatFigures = logical(getOption(opts, 'SaveMatFigures', false));
 % 常改 4：缺少前置参数时，是否允许联合回退辨识。
 cfg.EnableJointFallback = logical(getOption(opts, 'EnableJointFallback', true));
+% 常改 5：是否启用角速度移动平均滤波。
+cfg.EnableRateFilter = logical(getOption(opts, 'EnableRateFilter', true));
 % 常改 5：角速度滤波窗口。越大越平滑，但会更钝化边沿。
 cfg.RateFilterWindow = max(1, round(getOption(opts, 'RateFilterWindow', 7)));
 % 常改 6：stage1 尾段取样比例和最少样本数。
@@ -306,14 +314,16 @@ end
 experimentRoot = fullfile(cfg.ProjectRoot, 'experiment_tests');
 originRoot = fullfile(cfg.ProjectRoot, 'origin_experiment_test');
 
+requiredStageIds = getRequestedStageIds(cfg);
+
 experimentCatalog = collectStageCsvFiles(experimentRoot);
-if hasCompleteStageSet(experimentCatalog)
+if hasRequiredStageSet(experimentCatalog, requiredStageIds)
     catalog = experimentCatalog;
     resolvedSearchRoot = experimentRoot;
     return;
 end
 
-fprintf('未在 experiment_tests 中找到可用于辨识的完整阶段 CSV，回退到 origin_experiment_test。\n');
+fprintf('未在 experiment_tests 中找到当前模式所需的阶段 CSV，回退到 origin_experiment_test。\n');
 
 originCatalog = collectStageCsvFiles(originRoot);
 if ~isempty(originCatalog)
@@ -347,14 +357,14 @@ for i = 1:numel(entries)
 end
 end
 
-function tf = hasCompleteStageSet(catalog)
+function tf = hasRequiredStageSet(catalog, stageIds)
 if isempty(catalog)
     tf = false;
     return;
 end
 
 stages = unique([catalog.stageId]);
-tf = all(ismember(1:4, stages));
+tf = all(ismember(stageIds, stages));
 end
 
 function meta = inspectStageCsv(filePath, dirEntry)
@@ -528,7 +538,11 @@ uPwm = 0.5 * (rightPwm - leftPwm);
 uPwm = columnVector(uPwm);
 
 yawRateRadS = deg2rad(columnVector(yawRateDegS));
-yawRateRadSFiltered = movmean(yawRateRadS, cfg.RateFilterWindow, 'Endpoints', 'shrink');
+if cfg.EnableRateFilter
+    yawRateRadSFiltered = movmean(yawRateRadS, cfg.RateFilterWindow, 'Endpoints', 'shrink');
+else
+    yawRateRadSFiltered = yawRateRadS;
+end
 if numel(timeS) >= 3
     yawAccelRadS2 = gradient(yawRateRadSFiltered, timeS);
 else
