@@ -1,3 +1,7 @@
 ﻿# Ignore local experiment data folders
 speed_pwm/experiment_tests/
 speed_pwm/origin_experiment_test/
+speed_pwm/example_csv
+Nomoto/experiment_tests/
+Nomoto/origin_experiment_test/
+Nomoto/results/
