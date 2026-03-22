@@ -9,7 +9,7 @@ runMode = 'identify';
 % 是否启用角速度滤波：
 % true  -> 先对 yaw_rate 做移动平均，再参与最小二乘拟合
 % false -> 直接使用原始 yaw_rate 参与最小二乘拟合
-useRateFilter = false;
+useRateFilter = true;
 %
 % 验证模式参数（仅 runMode = 'validate' 时生效）：
 % validateK:
@@ -243,6 +243,11 @@ fprintf('\n辨识结果汇总：\n');
 fprintf('  K     = %.12g\n', results.final_params.K);
 fprintf('  T     = %.12g\n', results.final_params.T);
 fprintf('  alpha = %.12g\n', results.final_params.alpha);
+if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
+        && isfinite(results.stage_results.stage1.turning_radius_m)
+    fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
+        results.stage_results.stage1.turning_radius_m, results.stage_results.stage1.turning_diameter_m);
+end
 fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
 end
 
@@ -691,6 +696,9 @@ stageResult.tail_sample_count = tailCount;
 stageResult.mean_half_pwm = mean(uTail);
 stageResult.mean_yaw_rate_deg_s = rad2deg(mean(rTail));
 stageResult.steady_yaw_rate_hat_deg_s = rad2deg(rSteadyHat);
+stageResult.mean_speed_mps = meanFinite(data.speedMps(tailIdx));
+stageResult.turning_radius_m = estimateTurningRadius(stageResult.mean_speed_mps, mean(rTail));
+stageResult.turning_diameter_m = 2 * stageResult.turning_radius_m;
 stageResult.rmse_tail_rad_s = nomoto_utils.rmse(rTail, rTailHat);
 stageResult.r2_tail = nomoto_utils.rsquared(rTail, rTailHat);
 
@@ -981,6 +989,14 @@ summaryLines = {
     '本次选中的文件：'
     };
 
+if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
+        && isfinite(results.stage_results.stage1.turning_radius_m)
+    summaryLines{end + 1, 1} = sprintf('stage1 回转半径：%.6f m', results.stage_results.stage1.turning_radius_m); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('stage1 回转直径：%.6f m', results.stage_results.stage1.turning_diameter_m); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('stage1 尾段平均航速：%.6f m/s', results.stage_results.stage1.mean_speed_mps); %#ok<AGROW>
+    summaryLines{end + 1, 1} = ''; %#ok<AGROW>
+end
+
 for i = 1:numel(results.selected_files)
     summaryLines{end + 1, 1} = sprintf('  阶段 %d -> %s', ...
         results.selected_files(i).stage_id, results.selected_files(i).file_path); %#ok<AGROW>
@@ -1175,6 +1191,24 @@ end
 value = double(value);
 if ~isscalar(value)
     error('选项 %s 必须为标量。', fieldName);
+end
+end
+
+function value = meanFinite(values)
+values = columnVector(values);
+values = values(isfinite(values));
+if isempty(values)
+    value = NaN;
+else
+    value = mean(values);
+end
+end
+
+function radiusM = estimateTurningRadius(speedMps, yawRateRadS)
+if ~(isfinite(speedMps) && isfinite(yawRateRadS) && abs(yawRateRadS) > eps)
+    radiusM = NaN;
+else
+    radiusM = abs(speedMps / yawRateRadS);
 end
 end
 

@@ -161,7 +161,7 @@ if isempty(catalog)
 end
 
 requestedStageIds = getRequestedStageIds(cfg);
-selectedFiles = selectLatestStageFiles(catalog, requestedStageIds);
+selectedFiles = selectLatestStageFiles(catalog, requestedStageIds, cfg);
 if isempty(selectedFiles)
     error('没有选中 stage 1-4 的 CSV 文件，无法进行辨识。');
 end
@@ -187,11 +187,19 @@ results.selected_files = struct([]);
 results.stage_results = struct();
 results.initial_params = paramsToStruct(params);
 
-stageOrder = sort([selectedFiles.stageId]);
+stageOrder = unique(sort([selectedFiles.stageId]));
+writeIdx = 0;
 for i = 1:numel(selectedFiles)
-    results.selected_files(i).stage_id = selectedFiles(i).stageId;
-    results.selected_files(i).file_path = selectedFiles(i).filePath;
-    results.selected_files(i).file_timestamp = selectedFiles(i).timestampLabel;
+    writeIdx = writeIdx + 1;
+    results.selected_files(writeIdx).stage_id = selectedFiles(i).stageId;
+    results.selected_files(writeIdx).file_path = selectedFiles(i).filePath;
+    results.selected_files(writeIdx).file_timestamp = selectedFiles(i).timestampLabel;
+    if isfield(selectedFiles(i), 'pairedFilePath') && ~isempty(selectedFiles(i).pairedFilePath)
+        writeIdx = writeIdx + 1;
+        results.selected_files(writeIdx).stage_id = selectedFiles(i).stageId;
+        results.selected_files(writeIdx).file_path = selectedFiles(i).pairedFilePath;
+        results.selected_files(writeIdx).file_timestamp = selectedFiles(i).pairedTimestampLabel;
+    end
 end
 
 for i = 1:numel(stageOrder)
@@ -206,7 +214,14 @@ for i = 1:numel(stageOrder)
 
     switch stageId
         case 1
-            stageResult = identifyStage1K(data, stageFolder, cfg);
+            if isfield(selected, 'pairedFilePath') && ~isempty(selected.pairedFilePath)
+                pairedData = readStageData(selected.pairedFilePath, cfg);
+                stageResult = identifyStage1KDual(data, pairedData, stageFolder, cfg);
+                stageResult.file_paths = {selected.filePath, selected.pairedFilePath};
+                stageResult.stage_name = 'steady_turn_dual';
+            else
+                stageResult = identifyStage1K(data, stageFolder, cfg);
+            end
             if isfinite(stageResult.K_pos)
                 params.KPos = stageResult.K_pos;
                 params.SourceKPos = 'stage1';
@@ -226,7 +241,9 @@ for i = 1:numel(stageOrder)
     end
 
     stageResult.file_path = selected.filePath;
-    stageResult.stage_name = data.stageName;
+    if ~isfield(stageResult, 'stage_name') || isempty(stageResult.stage_name)
+        stageResult.stage_name = data.stageName;
+    end
     stageResult.common_figures = overviewFiles;
     results.stage_results.(sprintf('stage%d', stageId)) = stageResult;
     results.params_after_stage.(sprintf('stage%d', stageId)) = paramsToStruct(params); %#ok<STRNU>
@@ -246,6 +263,17 @@ fprintf('  K-    = %.12g\n', results.final_params.K_neg);
 fprintf('  K_eq  = %.12g\n', results.final_params.K);
 fprintf('  T     = %.12g\n', results.final_params.T);
 fprintf('  alpha = %.12g\n', results.final_params.alpha);
+if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
+        && isfinite(results.stage_results.stage1.turning_radius_m)
+    fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
+        results.stage_results.stage1.turning_radius_m, results.stage_results.stage1.turning_diameter_m);
+    if isfield(results.stage_results.stage1, 'turning_radius_pos_m') && isfinite(results.stage_results.stage1.turning_radius_pos_m)
+        fprintf('  stage1 正向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_pos_m);
+    end
+    if isfield(results.stage_results.stage1, 'turning_radius_neg_m') && isfinite(results.stage_results.stage1.turning_radius_neg_m)
+        fprintf('  stage1 反向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_neg_m);
+    end
+end
 fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
 end
 
@@ -404,6 +432,10 @@ if ~(isfinite(stageId) && any(stageId == 1:4))
     return;
 end
 
+leftPwm = numericColumn(tbl, names, {'left_pwm'}, true);
+rightPwm = numericColumn(tbl, names, {'right_pwm'}, true);
+meanInput = mean(0.5 * (rightPwm - leftPwm), 'omitnan');
+
 timestampText = extractTimestampText(filePath);
 if isempty(timestampText)
     dt = datetime(dirEntry.datenum, 'ConvertFrom', 'datenum');
@@ -421,9 +453,10 @@ meta.filePath = filePath;
 meta.fileName = dirEntry.name;
 meta.timestampValue = timestampValue;
 meta.timestampLabel = timestampLabel;
+meta.meanInput = meanInput;
 end
 
-function selected = selectLatestStageFiles(catalog, stageIds)
+function selected = selectLatestStageFiles(catalog, stageIds, cfg)
 if nargin < 2 || isempty(stageIds)
     stageIds = 1:4;
 end
@@ -434,12 +467,55 @@ for stageId = stageIds
     if isempty(matches)
         continue;
     end
-    [~, idx] = max([matches.timestampValue]);
-    if isempty(selected)
-        selected = matches(idx);
+    if stageId == 1 && isIdentifyMode(cfg)
+        picked = selectStage1Pair(matches);
     else
-        selected(end + 1) = matches(idx); %#ok<AGROW>
+        [~, idx] = max([matches.timestampValue]);
+        picked = matches(idx);
     end
+    if ~isfield(picked, 'pairedFilePath')
+        picked.pairedFilePath = '';
+        picked.pairedTimestampLabel = '';
+        picked.pairedMeanInput = NaN;
+    end
+    if isempty(selected)
+        selected = picked;
+    else
+        selected(end + 1) = picked; %#ok<AGROW>
+    end
+end
+end
+
+function picked = selectStage1Pair(matches)
+posMask = arrayfun(@(s) isfield(s, 'meanInput') && isfinite(s.meanInput) && s.meanInput > 0, matches);
+negMask = arrayfun(@(s) isfield(s, 'meanInput') && isfinite(s.meanInput) && s.meanInput < 0, matches);
+
+if any(posMask) && any(negMask)
+    posMatches = matches(posMask);
+    negMatches = matches(negMask);
+    [~, posIdx] = max([posMatches.timestampValue]);
+    [~, negIdx] = max([negMatches.timestampValue]);
+    picked = posMatches(posIdx);
+    picked.pairedFilePath = negMatches(negIdx).filePath;
+    picked.pairedTimestampLabel = negMatches(negIdx).timestampLabel;
+    picked.pairedMeanInput = negMatches(negIdx).meanInput;
+    fprintf('stage1 使用双定常回转：K+ 文件 -> %s\n', picked.filePath);
+    fprintf('stage1 使用双定常回转：K- 文件 -> %s\n', picked.pairedFilePath);
+elseif any(posMask) || any(negMask)
+    available = matches(posMask | negMask);
+    [~, idx] = max([available.timestampValue]);
+    picked = available(idx);
+    picked.pairedFilePath = '';
+    picked.pairedTimestampLabel = '';
+    picked.pairedMeanInput = NaN;
+    fprintf('stage1 仅找到单边定常回转文件，另一侧 K 将在后续 zigzag 中联合辨识。\n');
+else
+    [~, idx] = max([matches.timestampValue]);
+    picked = matches(idx);
+    picked.pairedFilePath = '';
+    picked.pairedTimestampLabel = '';
+    picked.pairedMeanInput = NaN;
+    fprintf('stage1 未识别出正负方向定常回转，退回单文件初值模式。\n');
 end
 end
 
@@ -710,6 +786,9 @@ stageResult.branch_sample_count_pos = nnz(posMask);
 stageResult.branch_sample_count_neg = nnz(negMask);
 stageResult.mean_yaw_rate_deg_s = rad2deg(mean(rTail));
 stageResult.steady_yaw_rate_hat_deg_s = rad2deg(rSteadyHat);
+stageResult.mean_speed_mps = meanFinite(data.speedMps(tailIdx));
+stageResult.turning_radius_m = estimateTurningRadius(stageResult.mean_speed_mps, mean(rTail));
+stageResult.turning_diameter_m = 2 * stageResult.turning_radius_m;
 stageResult.rmse_tail_rad_s = nomoto_utils.rmse(rTail, rTailHat);
 stageResult.r2_tail = nomoto_utils.rsquared(rTail, rTailHat);
 
@@ -745,6 +824,125 @@ legend({'尾段样本', 'r = K(u) u'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K'), cfg);
+end
+
+function stageResult = identifyStage1KDual(dataA, dataB, stageFolder, cfg)
+style = plotStyle();
+
+if mean(dataA.uPwm, 'omitnan') >= 0
+    dataPos = dataA;
+    dataNeg = dataB;
+else
+    dataPos = dataB;
+    dataNeg = dataA;
+end
+
+[KPos, tailPos] = estimateStage1Branch(dataPos, cfg);
+[KNeg, tailNeg] = estimateStage1Branch(dataNeg, cfg);
+
+stageResult = struct();
+stageResult.method = 'steady_tail_least_squares_dual_files';
+stageResult.K_pos = KPos;
+stageResult.K_neg = KNeg;
+stageResult.K = equivalentBranchK(KPos, KNeg);
+stageResult.asymmetry_ratio = safeBranchRatio(KNeg, KPos);
+stageResult.tail_sample_count_pos = tailPos.tailCount;
+stageResult.tail_sample_count_neg = tailNeg.tailCount;
+stageResult.mean_positive_half_pwm = mean(tailPos.uTail);
+stageResult.mean_negative_half_pwm = mean(tailNeg.uTail);
+stageResult.mean_yaw_rate_pos_deg_s = rad2deg(mean(tailPos.rTail));
+stageResult.mean_yaw_rate_neg_deg_s = rad2deg(mean(tailNeg.rTail));
+stageResult.mean_speed_pos_mps = meanFinite(dataPos.speedMps(tailPos.tailIdx));
+stageResult.mean_speed_neg_mps = meanFinite(dataNeg.speedMps(tailNeg.tailIdx));
+stageResult.turning_radius_pos_m = estimateTurningRadius(stageResult.mean_speed_pos_mps, mean(tailPos.rTail));
+stageResult.turning_radius_neg_m = estimateTurningRadius(stageResult.mean_speed_neg_mps, abs(mean(tailNeg.rTail)));
+radiusValues = [stageResult.turning_radius_pos_m, stageResult.turning_radius_neg_m];
+radiusValues = radiusValues(isfinite(radiusValues));
+if isempty(radiusValues)
+    stageResult.turning_radius_m = NaN;
+else
+    stageResult.turning_radius_m = mean(radiusValues);
+end
+stageResult.turning_diameter_m = 2 * stageResult.turning_radius_m;
+stageResult.mean_speed_mps = meanFinite([stageResult.mean_speed_pos_mps; stageResult.mean_speed_neg_mps]);
+stageResult.rmse_tail_rad_s = nomoto_utils.rmse([tailPos.rTail; tailNeg.rTail], [tailPos.rTailHat; tailNeg.rTailHat]);
+stageResult.r2_tail = nomoto_utils.rsquared([tailPos.rTail; tailNeg.rTail], [tailPos.rTailHat; tailNeg.rTailHat]);
+
+fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-双定常回转 K 辨识');
+tiledlayout(fig, 2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+
+nexttile;
+plot(dataPos.timeS, dataPos.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+hold on;
+plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+xline(dataPos.timeS(tailPos.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
+yline(rad2deg(mean(tailPos.rTailHat)), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
+applyAxesStyle(style);
+xlabel('时间 (s)');
+ylabel('角速度 (deg/s)');
+title(sprintf('正向定常回转，K+ = %.6g', KPos));
+legend({'实测值', '处理值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
+hold off;
+
+nexttile;
+plot(dataNeg.timeS, dataNeg.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+hold on;
+plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+xline(dataNeg.timeS(tailNeg.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
+yline(rad2deg(mean(tailNeg.rTailHat)), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
+applyAxesStyle(style);
+xlabel('时间 (s)');
+ylabel('角速度 (deg/s)');
+title(sprintf('反向定常回转，K- = %.6g', KNeg));
+legend({'实测值', '处理值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
+hold off;
+
+nexttile;
+scatter(tailPos.uTail, rad2deg(tailPos.rTail), 18, style.pointColor, 'filled');
+hold on;
+xFitPos = linspace(min(tailPos.uTail), max(tailPos.uTail), 100).';
+plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+applyAxesStyle(style);
+xlabel('半 PWM 差值');
+ylabel('角速度 (deg/s)');
+title('正向尾段样本拟合');
+legend({'尾段样本', 'r = K+ u'}, 'Location', 'best');
+hold off;
+
+nexttile;
+scatter(tailNeg.uTail, rad2deg(tailNeg.rTail), 18, style.pointColor, 'filled');
+hold on;
+xFitNeg = linspace(min(tailNeg.uTail), max(tailNeg.uTail), 100).';
+plot(xFitNeg, rad2deg(KNeg * xFitNeg), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+applyAxesStyle(style);
+xlabel('半 PWM 差值');
+ylabel('角速度 (deg/s)');
+title('反向尾段样本拟合');
+legend({'尾段样本', 'r = K- u'}, 'Location', 'best');
+hold off;
+
+stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
+end
+
+function [K, tailInfo] = estimateStage1Branch(data, cfg)
+tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * data.sampleCount));
+tailCount = min(tailCount, data.sampleCount);
+tailIdx = (data.sampleCount - tailCount + 1):data.sampleCount;
+
+uTail = data.uPwm(tailIdx);
+rTail = data.yawRateRadSFiltered(tailIdx);
+den = sum(uTail .* uTail);
+if den <= eps
+    error('stage1 定常回转尾段输入过小，无法稳定辨识支路增益。');
+end
+
+K = sum(uTail .* rTail) / den;
+tailInfo = struct();
+tailInfo.tailCount = tailCount;
+tailInfo.tailIdx = tailIdx;
+tailInfo.uTail = uTail;
+tailInfo.rTail = rTail;
+tailInfo.rTailHat = K * uTail;
 end
 
 function [stageResult, params] = identifyStage2T(data, params, stageFolder, cfg)
@@ -997,6 +1195,14 @@ summaryLines = {
     ''
     '本次选中的文件：'
     };
+
+if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
+        && isfinite(results.stage_results.stage1.turning_radius_m)
+    summaryLines{end + 1, 1} = sprintf('stage1 回转半径：%.6f m', results.stage_results.stage1.turning_radius_m); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('stage1 回转直径：%.6f m', results.stage_results.stage1.turning_diameter_m); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('stage1 尾段平均航速：%.6f m/s', results.stage_results.stage1.mean_speed_mps); %#ok<AGROW>
+    summaryLines{end + 1, 1} = ''; %#ok<AGROW>
+end
 
 for i = 1:numel(results.selected_files)
     summaryLines{end + 1, 1} = sprintf('  阶段 %d -> %s', ...
@@ -1325,6 +1531,24 @@ for i = 1:numel(fieldNames)
     end
 end
 value = defaultValue;
+end
+
+function value = meanFinite(values)
+values = columnVector(values);
+values = values(isfinite(values));
+if isempty(values)
+    value = NaN;
+else
+    value = mean(values);
+end
+end
+
+function radiusM = estimateTurningRadius(speedMps, yawRateRadS)
+if ~(isfinite(speedMps) && isfinite(yawRateRadS) && abs(yawRateRadS) > eps)
+    radiusM = NaN;
+else
+    radiusM = abs(speedMps / yawRateRadS);
+end
 end
 
 function modeText = parseRunMode(rawMode)
