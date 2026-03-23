@@ -1008,29 +1008,31 @@ mask = data.analysisMask;
 requireSamples(mask, 8, 'stage 2');
 requireSignedSamples(u(mask), 5, 'stage 2');
 
-uPos = positiveInput(u);
-uNeg = negativeInput(u);
-A = [uPos(mask), uNeg(mask), -drdt(mask)];
-x = A \ r(mask);
+if ~(isfinite(params.KPos) && isfinite(params.KNeg))
+    error('阶段2需要阶段1先给出 K+ 和 K-，当前不再执行联合最小二乘回退。');
+end
 
-params.KPos = x(1);
-params.KNeg = x(2);
-params.T = x(3);
-params.SourceKPos = 'stage2_joint';
-params.SourceKNeg = 'stage2_joint';
-params.SourceT = 'stage2_joint';
+gainSpec = branchGainSpec(params);
+weightedInput = branchWeightedInput(u(mask), gainSpec);
+basis = drdt(mask);
+rhs = weightedInput - r(mask);
+den = sum(basis .* basis);
+if den <= eps
+    error('阶段2中的角速度导数信息过弱，无法稳定辨识 T。');
+end
+
+params.T = sum(basis .* rhs) / den;
+params.SourceT = 'stage2';
 
 if params.T <= 0
     error('阶段2联合辨识得到的 T <= 0，无法用于后续仿真。');
 end
 
-gainSpec = branchGainSpec(params);
 rModel = nomoto_utils.simulateLinearNomoto(data.timeS, u, gainSpec, params.T, r(1));
 headingModelDeg = cumtrapz(data.timeS, rad2deg(rModel));
-weightedInput = branchWeightedInput(u(mask), gainSpec);
 
 stageResult = struct();
-stageResult.method = 'joint_least_squares_K_pos_K_neg_T';
+stageResult.method = 'sequential_least_squares_known_K_pos_K_neg';
 stageResult.K_pos = params.KPos;
 stageResult.K_neg = params.KNeg;
 stageResult.K = equivalentBranchK(params.KPos, params.KNeg);
@@ -1108,32 +1110,18 @@ requireSamples(mask, 8, 'stage 3');
 requireSignedSamples(u(mask), 5, 'stage 3');
 
 stageResult = struct();
-hasKnownBranches = isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T);
-if hasKnownBranches
-    basis = r(mask) .^ 3;
-    rhs = branchWeightedInput(u(mask), params) - r(mask) - params.T * drdt(mask);
-    den = sum(basis .* basis);
-    if den <= eps
-        error('阶段3中的三次项信息过弱，无法稳定辨识 alpha。');
-    end
-    alpha = sum(basis .* rhs) / den;
-    stageResult.method = 'sequential_least_squares_known_K_pos_K_neg_T';
-elseif ~cfg.EnableJointFallback
-    error('阶段3缺少前置参数，且未启用联合回退辨识。');
-else
-    uPos = positiveInput(u);
-    uNeg = negativeInput(u);
-    A = [uPos(mask), uNeg(mask), -drdt(mask), -(r(mask) .^ 3)];
-    x = A \ r(mask);
-    params.KPos = x(1);
-    params.KNeg = x(2);
-    params.T = x(3);
-    alpha = x(4);
-    params.SourceKPos = 'stage3_joint';
-    params.SourceKNeg = 'stage3_joint';
-    params.SourceT = 'stage3_joint';
-    stageResult.method = 'joint_least_squares_K_pos_K_neg_T_alpha';
+if ~(isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T))
+    error('阶段3需要已知 K+、K-、T，当前不再执行联合最小二乘回退。');
 end
+
+basis = r(mask) .^ 3;
+rhs = branchWeightedInput(u(mask), params) - r(mask) - params.T * drdt(mask);
+den = sum(basis .* basis);
+if den <= eps
+    error('阶段3中的三次项信息过弱，无法稳定辨识 alpha。');
+end
+alpha = sum(basis .* rhs) / den;
+stageResult.method = 'sequential_least_squares_known_K_pos_K_neg_T';
 
 params.alpha = alpha;
 params.SourceAlpha = 'stage3';
