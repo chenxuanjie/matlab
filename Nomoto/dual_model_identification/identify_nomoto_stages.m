@@ -210,13 +210,15 @@ for i = 1:numel(stageOrder)
     stageFolder = fullfile(cfg.RunOutputRoot, sprintf('stage%d', stageId));
     ensureFolder(stageFolder);
 
-    overviewFiles = plotCommonFigures(data, stageFolder, cfg);
+    hasPairedStage1 = stageId == 1 && isfield(selected, 'pairedFilePath') && ~isempty(selected.pairedFilePath);
+    overviewFiles = plotCommonFigures(data, stageFolder, cfg, hasPairedStage1);
 
     switch stageId
         case 1
             if isfield(selected, 'pairedFilePath') && ~isempty(selected.pairedFilePath)
                 pairedData = readStageData(selected.pairedFilePath, cfg);
                 stageResult = identifyStage1KDual(data, pairedData, stageFolder, cfg);
+                overviewFiles.gps = plotStage1DualGps(data, pairedData, stageFolder, cfg);
                 stageResult.file_paths = {selected.filePath, selected.pairedFilePath};
                 stageResult.stage_name = 'steady_turn_dual';
             else
@@ -679,16 +681,20 @@ data.dtMedian = median(diff(timeS));
 data.sampleCount = numel(timeS);
 end
 
-function overviewFiles = plotCommonFigures(data, stageFolder, cfg)
+function overviewFiles = plotCommonFigures(data, stageFolder, cfg, skipGps)
 style = plotStyle();
 overviewFiles = struct();
+
+if nargin < 4
+    skipGps = false;
+end
 
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
     'Name', sprintf('阶段%d总览', data.stageId));
 tiledlayout(fig, 4, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(data.timeS, data.headingRelDeg, 'Color', style.headingColor, 'LineWidth', cfg.LineWidth);
+plotDiscreteSeries(data.timeS, data.headingRelDeg, style.headingColor);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
@@ -702,7 +708,7 @@ ylabel('半 PWM 差值');
 title('半 PWM 差值随时间变化');
 
 nexttile;
-plot(data.timeS, data.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
 hold on;
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.2);
 applyAxesStyle(style);
@@ -714,7 +720,7 @@ hold off;
 
 nexttile;
 if any(isfinite(data.speedMps))
-    plot(data.timeS, data.speedMps, 'Color', style.speedColor, 'LineWidth', cfg.LineWidth);
+    plotDiscreteSeries(data.timeS, data.speedMps, style.speedColor);
     ylabel('线速度 (m/s)');
 else
     plot(data.timeS, nan(size(data.timeS)), 'Color', style.speedColor, 'LineWidth', cfg.LineWidth);
@@ -726,7 +732,16 @@ title('线速度随时间变化');
 
 overviewFiles.overview = saveFigureBundle(fig, fullfile(stageFolder, sprintf('stage%d_overview', data.stageId)), cfg);
 
-if all(isfinite(data.longitude)) && all(isfinite(data.latitude))
+figAccel = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
+    'Name', sprintf('stage%d_yaw_accel', data.stageId));
+plot(data.timeS, rad2deg(data.yawAccelRadS2), '-', 'Color', style.measuredColor, 'LineWidth', 1.15);
+applyAxesStyle(style);
+xlabel('时间 (s)');
+ylabel('角加速度 (deg/s^2)');
+title(sprintf('阶段%d 角加速度随时间变化', data.stageId));
+overviewFiles.yaw_accel = saveFigureBundle(figAccel, fullfile(stageFolder, sprintf('stage%d_yaw_accel', data.stageId)), cfg);
+
+if ~skipGps && all(isfinite(data.longitude)) && all(isfinite(data.latitude))
     figMap = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
         'Name', sprintf('阶段%d 轨迹散点图', data.stageId));
     scatter(data.longitude, data.latitude, 18, data.timeS, 'filled');
@@ -796,7 +811,7 @@ fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-K�
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(data.timeS, data.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
 hold on;
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
 xline(data.timeS(tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
@@ -872,7 +887,7 @@ fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-�
 tiledlayout(fig, 2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(dataPos.timeS, dataPos.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
 hold on;
 plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
 xline(dataPos.timeS(tailPos.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
@@ -885,7 +900,7 @@ legend({'实测值', '处理值', '尾段起点', '稳态拟合值'}, 'Location'
 hold off;
 
 nexttile;
-plot(dataNeg.timeS, dataNeg.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
 hold on;
 plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
 xline(dataNeg.timeS(tailNeg.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
@@ -922,6 +937,44 @@ legend({'尾段样本', 'r = K- u'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
+end
+
+function gpsFigure = plotStage1DualGps(dataA, dataB, stageFolder, cfg)
+style = plotStyle();
+gpsFigure = struct('eps', '', 'fig', '');
+
+hasGpsA = all(isfinite(dataA.longitude)) && all(isfinite(dataA.latitude));
+hasGpsB = all(isfinite(dataB.longitude)) && all(isfinite(dataB.latitude));
+if ~(hasGpsA && hasGpsB)
+    return;
+end
+
+allLon = [dataA.longitude; dataB.longitude];
+allLat = [dataA.latitude; dataB.latitude];
+lon0 = mean(allLon, 'omitnan');
+lat0 = mean(allLat, 'omitnan');
+
+    figMap = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
+        'Name', sprintf('阶段%d 双定常回转轨迹散点图', dataA.stageId));
+hold on;
+scatter(dataA.longitude, dataA.latitude, 18, dataA.timeS, 'filled', 'DisplayName', '正向轨迹');
+scatter(dataB.longitude, dataB.latitude, 18, dataB.timeS, 'filled', 'Marker', 'd', 'DisplayName', '反向轨迹');
+scatter(dataA.longitude(1), dataA.latitude(1), 60, 'g', 'filled', 'HandleVisibility', 'off');
+scatter(dataA.longitude(end), dataA.latitude(end), 60, 'r', 'filled', 'HandleVisibility', 'off');
+scatter(dataB.longitude(1), dataB.latitude(1), 60, 'g', 'filled', 'Marker', 's', 'HandleVisibility', 'off');
+scatter(dataB.longitude(end), dataB.latitude(end), 60, 'r', 'filled', 'Marker', 's', 'HandleVisibility', 'off');
+
+    applyAxesStyle(style);
+    axis equal;
+    xlabel('经度');
+ylabel('纬度');
+title(sprintf('阶段%d 双定常回转轨迹散点图', dataA.stageId));
+c = colorbar;
+ylabel(c, '时间 (s)');
+legend('Location', 'best');
+hold off;
+
+gpsFigure = saveFigureBundle(figMap, fullfile(stageFolder, sprintf('stage%d_gps', dataA.stageId)), cfg);
 end
 
 function [K, tailInfo] = estimateStage1Branch(data, cfg)
@@ -989,11 +1042,37 @@ stageResult.yaw_rate_r2 = nomoto_utils.rsquared(r, rModel);
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingModelDeg);
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingModelDeg);
 
+stage2FitX = drdt(mask);
+stage2FitY = weightedInput - r(mask);
+stage2FitXDeg = rad2deg(stage2FitX);
+stage2FitYDeg = rad2deg(stage2FitY);
+xMin = min(stage2FitXDeg);
+xMax = max(stage2FitXDeg);
+if abs(xMax - xMin) <= eps(max(1, max(abs(stage2FitXDeg))))
+    xPad = max(1, 0.1 * max(1, abs(xMax)));
+    xLine = linspace(xMin - xPad, xMax + xPad, 100).';
+else
+    xLine = linspace(xMin, xMax, 100).';
+end
+yLine = params.T * xLine;
+
+figLsq = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', 'stage2_least_squares_fit');
+scatter(stage2FitXDeg, stage2FitYDeg, 18, style.pointColor, 'filled');
+hold on;
+plot(xLine, yLine, '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+applyAxesStyle(style);
+xlabel('角速度导数 dr/dt (deg/s^2)');
+ylabel('K(u)u - r (deg/s)');
+title(sprintf('阶段2 最小二乘拟合 T，斜率 = %.6g s', params.T));
+legend({'有效样本', '最小二乘拟合'}, 'Location', 'best');
+hold off;
+stageResult.lsq_figure = saveFigureBundle(figLsq, fullfile(stageFolder, 'stage2_least_squares_fit'), cfg);
+
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段2-T辨识');
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(data.timeS, data.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
 hold on;
 plot(data.timeS, rad2deg(rModel), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
@@ -1074,11 +1153,23 @@ stageResult.yaw_rate_r2 = nomoto_utils.rsquared(r, rNonlinear);
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingNonlinearDeg);
 
+figFilter = figure('Visible', figureVisibility(cfg), 'Color', 'w');
+plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
+hold on;
+plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
+applyAxesStyle(style);
+xlabel('时间 (s)');
+ylabel('角速度 (deg/s)');
+title('阶段3 原始离散点与滤波后曲线对比');
+legend({'原始离散点', '滤波后曲线'}, 'Location', 'best');
+hold off;
+stageResult.filter_comparison_figure = saveFigureBundle(figFilter, fullfile(stageFolder, 'stage3_filter_comparison'), cfg);
+
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段3-alpha辨识');
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(data.timeS, data.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
 hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
@@ -1134,14 +1225,14 @@ fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4模
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plot(data.timeS, data.yawRateDegS, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.measuredColor, 'LineWidth', 1.1);
 hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
 title('阶段4 角速度验证');
-legend({'实测值', '非线性模型'}, 'Location', 'best');
+legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
 nexttile;
@@ -1152,7 +1243,7 @@ applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
 title('阶段4 航向角验证');
-legend({'实测值', '非线性模型'}, 'Location', 'best');
+legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage4_validation'), cfg);
@@ -1165,7 +1256,7 @@ applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角误差 (deg)');
 title(sprintf('阶段4 航向角误差（实测 - 模型），RMSE = %.3f deg', stageResult.heading_rmse_deg));
-legend({'航向角误差', '零误差参考线'}, 'Location', 'best');
+legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
 stageResult.heading_error_figure = saveFigureBundle(figErr, fullfile(stageFolder, 'stage4_heading_error'), cfg);
@@ -1452,13 +1543,13 @@ end
 
 function style = plotStyle()
 style = struct();
-style.measuredColor = [0.18, 0.18, 0.18];
-style.inputColor = [0.12, 0.45, 0.78];
-style.fitColor = [0.82, 0.15, 0.10];
-style.referenceColor = [0.42, 0.56, 0.70];
-style.headingColor = [0.10, 0.52, 0.35];
-style.speedColor = [0.65, 0.40, 0.12];
-style.pointColor = [0.38, 0.20, 0.58];
+style.measuredColor = [0.34, 0.16, 0.52];
+style.inputColor = [0.30, 0.30, 0.30];
+style.fitColor = [0.74, 0.21, 0.14];
+style.referenceColor = [0.58, 0.65, 0.72];
+style.headingColor = [0.00, 0.43, 0.32];
+style.speedColor = [0.58, 0.42, 0.20];
+style.pointColor = [0.34, 0.16, 0.52];
 end
 
 function applyAxesStyle(~)
@@ -1471,6 +1562,11 @@ ax.GridAlpha = 0.18;
 ax.MinorGridAlpha = 0.08;
 ax.XColor = [0.15, 0.15, 0.15];
 ax.YColor = [0.15, 0.15, 0.15];
+end
+
+function h = plotDiscreteSeries(x, y, colorSpec)
+h = scatter(x, y, 18, colorSpec, 'filled', ...
+    'MarkerEdgeColor', [1, 1, 1], 'LineWidth', 0.45);
 end
 
 function saved = saveFigureBundle(fig, basePath, cfg)
