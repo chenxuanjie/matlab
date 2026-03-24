@@ -11,77 +11,6 @@ runMode = 'identify';
 % false -> 直接使用原始 yaw_rate 参与最小二乘拟合
 useRateFilter = true;
 %
-% 验证模式参数（仅 runMode = 'validate' 时生效）：
-validateKPos = 0.00615955;
-validateKNeg = 0.00705955;
-validateT = 0.465642;
-validateAlpha =  0.225721;
-%
-% 说明：
-% 1. 默认数据目录：优先读取 Nomoto/experiment_tests
-%    如果找不到完整阶段数据，会打印提示后回退到 origin_experiment_test
-% 2. 直接点击运行时，会使用上面这组配置
-% 3. 如果从命令行传入 experimentRoot / opts，则外部传入值优先
-%
-% ======================== 旧说明区（忽略） ========================
-if false
-%IDENTIFY_NOMOTO_STAGES 按阶段自动辨识 K、T、alpha 参数。
-%
-% 用法：
-%   results = identify_nomoto_stages()
-%   results = identify_nomoto_stages(experimentRoot)
-%   results = identify_nomoto_stages(experimentRoot, opts)
-%
-% 采用模型：
-%   T * dr/dt + r + alpha * r^3 = K(u) * u
-%   K(u) = K_pos,  u >= 0
-%   K(u) = K_neg,  u < 0
-%
-% 输入量定义：
-%   u = (right_pwm - left_pwm) / 2
-%
-% 其中正值表示左电机减小、右电机增大。
-
-% ======================== 常改项（优先看这里） ========================
-% 1. 运行模式：
-%    opts.Mode = 'identify'  -> 按 stage1~4 做完整辨识
-%    opts.Mode = 'validate'  -> 只读取 stage4，用给定参数做验证
-%
-% 2. 数据目录：
-%    experimentRoot 留空时，默认先读 Nomoto/experiment_tests；
-%    如果 experiment_tests 中没有可用数据，会打印提示后回退到 origin_experiment_test。
-%
-% 3. 验证模式必填参数（双模型）：
-%    opts.KPos
-%    opts.KNeg
-%    opts.T
-%    opts.alpha
-%
-% 4. 其他常改项：
-%    opts.ShowFigures      -> true/false，是否显示图
-%    opts.OutputRoot       -> 结果输出目录
-%    opts.RateFilterWindow -> 角速度移动平均窗口长度
-%
-% 5. 常用示例：
-%    results = identify_nomoto_stages('', struct('Mode', 'identify', 'ShowFigures', false));
-%    results = identify_nomoto_stages('', struct('Mode', 'validate', ...
-%        'ShowFigures', true, 'KPos', 0.0051, 'KNeg', 0.0057, ...
-%        'T', 0.3920, 'alpha', -0.5930));
-% ======================== 输入配置区（可直接修改） ========================
-%
-% 运行模式：
-% 'identify' -> 完整辨识（stage1 ~ stage4）
-% 'validate' -> 只做 stage4 验证，使用下面手填参数
-runMode = 'identify';
-%
-% 数据来源模式：
-% 'auto' -> 默认先读 Nomoto/experiment_tests；找不到完整数据再回退到 origin_experiment_test
-% 'path' -> 使用下面 dataPath 指定的目录
-dataSourceMode = 'auto';
-%
-% 当 dataSourceMode = 'path' 时生效：填写实验数据目录
-dataPath = '';
-%
 % 是否显示图窗
 showFigures = true;
 %
@@ -90,6 +19,9 @@ saveMatFigures = false;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
+%
+% 直行修正所需的半 PWM 差值，逆时针为正
+uTrim = 0;
 %
 % 角速度移动平均滤波窗口长度。越大越平滑，但边沿会更钝
 rateFilterWindow = 7;
@@ -105,17 +37,17 @@ derivativeTrimSamples = 1;
 % 是否允许联合回退辨识
 enableJointFallback = true;
 %
-% ======================== 验证模式参数区（仅 validate 生效） ========================
-% 双模型验证参数：直接填 KPos / KNeg / T / alpha
-validateKPos = NaN;
-validateKNeg = NaN;
-validateT = NaN;
-validateAlpha = NaN;
+% 验证模式参数（仅 runMode = 'validate' 时生效）：
+validateKPos = 0.00615955;
+validateKNeg = 0.00705955;
+validateT = 0.465642;
+validateAlpha =  0.225721;
 %
 % 说明：
-% 1. 直接点击运行时，脚本会使用上面这组配置。
-% 2. 如果你从命令行传入 experimentRoot / opts，则外部传入值优先。
-end
+% 1. 默认数据目录：优先读取 Nomoto/experiment_tests
+%    如果找不到完整阶段数据，会打印提示后回退到 origin_experiment_test
+% 2. 直接点击运行时，会使用上面这组配置
+% 3. 如果从命令行传入 experimentRoot / opts，则外部传入值优先
 
 if nargin < 1
     experimentRoot = '';
@@ -124,14 +56,18 @@ if nargin < 2 || isempty(opts)
     opts = struct();
     opts.Mode = runMode;
     opts.EnableRateFilter = useRateFilter;
-    opts.ShowFigures = true;
-    opts.SaveMatFigures = false;
-    opts.RateFilterWindow = 7;
-    opts.Stage1TailFraction = 0.30;
-    opts.Stage1TailMinSamples = 30;
-    opts.MinInputAbs = 1.0;
-    opts.DerivativeTrimSamples = 1;
-    opts.EnableJointFallback = true;
+    opts.ShowFigures = showFigures;
+    opts.SaveMatFigures = saveMatFigures;
+    opts.RateFilterWindow = rateFilterWindow;
+    opts.Stage1TailFraction = stage1TailFraction;
+    opts.Stage1TailMinSamples = stage1TailMinSamples;
+    opts.UTrim = uTrim;
+    opts.MinInputAbs = minInputAbs;
+    opts.DerivativeTrimSamples = derivativeTrimSamples;
+    opts.EnableJointFallback = enableJointFallback;
+    if ~isempty(outputRoot)
+        opts.OutputRoot = outputRoot;
+    end
     if isfinite(validateKPos)
         opts.KPos = validateKPos;
     end
@@ -265,6 +201,7 @@ fprintf('  K-    = %.12g\n', results.final_params.K_neg);
 fprintf('  K_eq  = %.12g\n', results.final_params.K);
 fprintf('  T     = %.12g\n', results.final_params.T);
 fprintf('  alpha = %.12g\n', results.final_params.alpha);
+fprintf('  u_trim = %.12g\n', results.final_params.u_trim);
 if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
         && isfinite(results.stage_results.stage1.turning_radius_m)
     fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
@@ -318,6 +255,7 @@ cfg.RateFilterWindow = max(1, round(getOption(opts, 'RateFilterWindow', 7)));
 % 常改 6：stage1 尾段取样比例和最少样本数。
 cfg.Stage1TailFraction = getOption(opts, 'Stage1TailFraction', 0.30);
 cfg.Stage1TailMinSamples = max(10, round(getOption(opts, 'Stage1TailMinSamples', 30)));
+cfg.UTrim = getOption(opts, 'UTrim', 0.0);
 % 常改 7：有效输入阈值与导数边界裁剪。
 cfg.MinInputAbs = getOption(opts, 'MinInputAbs', 1.0);
 cfg.DerivativeTrimSamples = max(0, round(getOption(opts, 'DerivativeTrimSamples', 1)));
@@ -614,6 +552,7 @@ end
 timeS = timeS - timeS(1);
 uPwm = 0.5 * (rightPwm - leftPwm);
 uPwm = columnVector(uPwm);
+uModelPwm = uPwm - cfg.UTrim;
 
 yawRateRadS = deg2rad(columnVector(yawRateDegS));
 if cfg.EnableRateFilter
@@ -637,7 +576,7 @@ if trim > 0
     analysisMask(end - trim + 1:end) = false;
 end
 analysisMask = analysisMask & isfinite(yawAccelRadS2) & isfinite(yawRateRadSFiltered);
-analysisMask = analysisMask & (abs(uPwm) >= cfg.MinInputAbs);
+analysisMask = analysisMask & (abs(uModelPwm) >= cfg.MinInputAbs);
 
 stageId = NaN;
 if ~isempty(stageIdCol)
@@ -667,6 +606,8 @@ data.timeS = columnVector(timeS);
 data.leftPwm = columnVector(leftPwm);
 data.rightPwm = columnVector(rightPwm);
 data.uPwm = uPwm;
+data.uModelPwm = uModelPwm;
+data.uTrim = cfg.UTrim;
 data.yawRateDegS = columnVector(yawRateDegS);
 data.yawRateRadS = yawRateRadS;
 data.yawRateRadSFiltered = yawRateRadSFiltered;
@@ -769,7 +710,7 @@ tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * data.sam
 tailCount = min(tailCount, data.sampleCount);
 tailIdx = (data.sampleCount - tailCount + 1):data.sampleCount;
 
-uTail = data.uPwm(tailIdx);
+uTail = data.uModelPwm(tailIdx);
 rTail = data.yawRateRadSFiltered(tailIdx);
 den = sum(uTail .* uTail);
 if den <= eps
@@ -832,10 +773,10 @@ if isscalar(unique(uTail))
 end
 plot(xFit, rad2deg(branchWeightedInput(xFit, gainSpec)), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
-xlabel('半 PWM 差值');
+xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
 title('阶段1 双支路稳态尾段样本与最小二乘拟合');
-legend({'尾段样本', 'r = K(u) u'}, 'Location', 'best');
+legend({'尾段样本', 'r = K(u-u_{trim})'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K'), cfg);
@@ -844,7 +785,7 @@ end
 function stageResult = identifyStage1KDual(dataA, dataB, stageFolder, cfg)
 style = plotStyle();
 
-if mean(dataA.uPwm, 'omitnan') >= 0
+if mean(dataA.uModelPwm, 'omitnan') >= 0
     dataPos = dataA;
     dataNeg = dataB;
 else
@@ -918,10 +859,10 @@ hold on;
 xFitPos = linspace(min(tailPos.uTail), max(tailPos.uTail), 100).';
 plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
-xlabel('半 PWM 差值');
+xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
 title('正向尾段样本拟合');
-legend({'尾段样本', 'r = K+ u'}, 'Location', 'best');
+legend({'尾段样本', 'r = K+ (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
 nexttile;
@@ -930,10 +871,10 @@ hold on;
 xFitNeg = linspace(min(tailNeg.uTail), max(tailNeg.uTail), 100).';
 plot(xFitNeg, rad2deg(KNeg * xFitNeg), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
-xlabel('半 PWM 差值');
+xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
 title('反向尾段样本拟合');
-legend({'尾段样本', 'r = K- u'}, 'Location', 'best');
+legend({'尾段样本', 'r = K- (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
@@ -982,7 +923,7 @@ tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * data.sam
 tailCount = min(tailCount, data.sampleCount);
 tailIdx = (data.sampleCount - tailCount + 1):data.sampleCount;
 
-uTail = data.uPwm(tailIdx);
+uTail = data.uModelPwm(tailIdx);
 rTail = data.yawRateRadSFiltered(tailIdx);
 den = sum(uTail .* uTail);
 if den <= eps
@@ -1000,7 +941,7 @@ end
 
 function [stageResult, params] = identifyStage2T(data, params, stageFolder, cfg)
 style = plotStyle();
-u = data.uPwm;
+u = data.uModelPwm;
 r = data.yawRateRadSFiltered;
 drdt = data.yawAccelRadS2;
 mask = data.analysisMask;
@@ -1064,7 +1005,7 @@ hold on;
 plot(xLine, yLine, '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
 xlabel('角速度导数 dr/dt (deg/s^2)');
-ylabel('K(u)u - r (deg/s)');
+ylabel('K(u-u_{trim}) - r (deg/s)');
 title(sprintf('阶段2 最小二乘拟合 T，斜率 = %.6g s', params.T));
 legend({'有效样本', '最小二乘拟合'}, 'Location', 'best');
 hold off;
@@ -1101,7 +1042,7 @@ end
 
 function [stageResult, params] = identifyStage3Alpha(data, params, stageFolder, cfg)
 style = plotStyle();
-u = data.uPwm;
+u = data.uModelPwm;
 r = data.yawRateRadSFiltered;
 drdt = data.yawAccelRadS2;
 mask = data.analysisMask;
@@ -1188,7 +1129,7 @@ if ~(isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T) && isf
     error('阶段4双支路非线性模型验证需要已知 K+、K-、T、alpha。');
 end
 
-u = data.uPwm;
+u = data.uModelPwm;
 r0 = data.yawRateRadSFiltered(1);
 gainSpec = branchGainSpec(params);
 rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, gainSpec, params.T, params.alpha, r0);
@@ -1271,6 +1212,7 @@ summaryLines = {
     sprintf('K 参数：%.12g', results.final_params.K)
     sprintf('T 参数：%.12g', results.final_params.T)
     sprintf('alpha 参数：%.12g', results.final_params.alpha)
+    sprintf('u_trim 参数：%.12g', results.final_params.u_trim)
     ''
     '本次选中的文件：'
     };
@@ -1360,6 +1302,8 @@ if isfinite(cfg.OverrideAlpha)
     params.alpha = cfg.OverrideAlpha;
     params.SourceAlpha = 'override';
 end
+params.UTrim = cfg.UTrim;
+params.SourceUTrim = 'config';
 end
 
 function params = initializeValidationParams(cfg)
@@ -1368,10 +1312,12 @@ params.KPos = cfg.OverrideKPos;
 params.KNeg = cfg.OverrideKNeg;
 params.T = cfg.OverrideT;
 params.alpha = cfg.OverrideAlpha;
+params.UTrim = cfg.UTrim;
 params.SourceKPos = 'validate_input';
 params.SourceKNeg = 'validate_input';
 params.SourceT = 'validate_input';
 params.SourceAlpha = 'validate_input';
+params.SourceUTrim = 'config';
 
 if isfinite(cfg.OverrideK)
     params.KPos = cfg.OverrideK;
@@ -1407,11 +1353,13 @@ out.K_neg = params.KNeg;
 out.K = equivalentBranchK(params.KPos, params.KNeg);
 out.T = params.T;
 out.alpha = params.alpha;
+out.u_trim = params.UTrim;
 out.K_source = combinedSourceText(params.SourceKPos, params.SourceKNeg);
 out.K_pos_source = params.SourceKPos;
 out.K_neg_source = params.SourceKNeg;
 out.T_source = params.SourceT;
 out.alpha_source = params.SourceAlpha;
+out.u_trim_source = params.SourceUTrim;
 out.model_variant = 'dual_branch_gain';
 end
 
