@@ -1,0 +1,7 @@
+experiment_tests/*
+!experiment_tests/.gitkeep
+origin_experiment_test/*
+!origin_experiment_test/.gitkeep
+results/*
+!results/.gitkeep
+*.asv
