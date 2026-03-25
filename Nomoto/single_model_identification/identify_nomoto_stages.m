@@ -14,8 +14,8 @@ useRateFilter = true;
 % 是否显示图窗
 showFigures = true;
 %
-% 是否额外保存 MATLAB 的 .fig 文件
-saveMatFigures = false;
+% 是否额外保存 EPS 矢量图
+saveEpsFigures = true;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
@@ -70,7 +70,7 @@ if nargin < 2 || isempty(opts)
     opts.Mode = runMode;
     opts.EnableRateFilter = useRateFilter;
     opts.ShowFigures = showFigures;
-    opts.SaveMatFigures = saveMatFigures;
+    opts.SaveEpsFigures = saveEpsFigures;
     opts.RateFilterWindow = rateFilterWindow;
     opts.Stage1TailFraction = stage1TailFraction;
     opts.Stage1TailMinSamples = stage1TailMinSamples;
@@ -221,8 +221,8 @@ cfg.Mode = parseRunMode(getOption(opts, 'Mode', 'identify'));
 
 % 常改 2：是否显示图窗。
 cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', true));
-% 常改 3：是否额外保存 MATLAB 的 .fig 文件。
-cfg.SaveMatFigures = logical(getOption(opts, 'SaveMatFigures', false));
+% 常改 3：是否额外保存 EPS 矢量图。
+cfg.SaveEpsFigures = logical(getOption(opts, 'SaveEpsFigures', false));
 % 常改 4：缺少前置参数时，是否允许联合回退辨识。
 cfg.EnableJointFallback = logical(getOption(opts, 'EnableJointFallback', true));
 % 常改 5：是否启用角速度移动平均滤波。
@@ -1157,11 +1157,13 @@ function saved = saveFigureBundle(fig, basePath, cfg)
 saved = struct('eps', '', 'fig', '');
 drawnow;
 
-epsPath = [basePath '.eps'];
-exportgraphics(fig, epsPath, 'ContentType', 'vector');
-saved.eps = epsPath;
+if cfg.SaveEpsFigures
+    epsPath = [basePath '.eps'];
+    exportgraphics(fig, epsPath, 'ContentType', 'vector');
+    saved.eps = epsPath;
+end
 
-if cfg.SaveMatFigures
+if isfield(cfg, 'SaveMatFigures') && cfg.SaveMatFigures
     figPath = [basePath '.fig'];
     savefig(fig, figPath);
     saved.fig = figPath;
