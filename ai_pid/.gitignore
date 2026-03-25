@@ -1,0 +1,14 @@
+experiment_tests/**
+!experiment_tests/
+!experiment_tests/.gitkeep
+!experiment_tests/ai_pid/
+!experiment_tests/ai_pid/.gitkeep
+!experiment_tests/pid/
+!experiment_tests/pid/.gitkeep
+origin_experiment_test/**
+!origin_experiment_test/
+!origin_experiment_test/.gitkeep
+results/**
+!results/
+!results/.gitkeep
+*.asv

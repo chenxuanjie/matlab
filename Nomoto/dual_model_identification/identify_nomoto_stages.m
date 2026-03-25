@@ -21,7 +21,7 @@ saveMatFigures = false;
 outputRoot = '';
 %
 % 直行修正所需的半 PWM 差值，逆时针为正
-uTrim = 0;
+uTrim = 3;
 %
 % 角速度移动平均滤波窗口长度。越大越平滑，但边沿会更钝
 rateFilterWindow = 7;
