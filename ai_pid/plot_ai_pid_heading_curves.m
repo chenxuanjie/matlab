@@ -23,7 +23,7 @@ function results = plot_ai_pid_heading_curves(varargin)
 %   opts.OutputRoot            -> 结果输出目录，默认 ai_pid/results
 %   opts.ReadMode              -> 读取模式，可选 ai_pid / pid / compare
 %   opts.ShowFigures           -> true/false，是否显示图窗
-%   opts.SaveMatFigures        -> true/false，是否额外保存 .fig
+%   opts.SaveEpsFigures        -> true/false，是否额外保存 .eps 矢量图
 %   opts.NormalizeTimeToZero   -> true/false，是否让时间从 0 秒起
 %   opts.UnwrapHeading         -> true/false，是否对航向角做展开显示
 %   opts.Delimiter             -> CSV 分隔符，留空表示自动判断
@@ -38,8 +38,8 @@ function results = plot_ai_pid_heading_curves(varargin)
     readMode = 'compare';
     % 是否显示图窗。true 为显示，false 为只保存不弹出。
     showFigures = true;
-    % 是否额外保存 MATLAB 的 .fig 图窗文件。
-    saveMatFigures = false;
+    % 是否额外保存 EPS 矢量图
+    saveEpsFigures = true;
     % 是否把时间轴统一平移到从 0 秒开始。
     normalizeTimeToZero = true;
     % 是否对航向角做展开，避免在 -180/180 附近跳变。
@@ -59,7 +59,7 @@ function results = plot_ai_pid_heading_curves(varargin)
     [csvInputs, opts] = parseMainInputs(varargin, defaultCsvInputs);
 
     scriptDir = fileparts(mfilename('fullpath'));
-    cfg = buildConfig(scriptDir, opts, showFigures, saveMatFigures, ...
+    cfg = buildConfig(scriptDir, opts, showFigures, saveEpsFigures, ...
         normalizeTimeToZero, unwrapHeading, outputRoot, readMode, delimiter, ...
         timeColumn, currentHeadingColumn, expectedHeadingColumn);
 
@@ -119,7 +119,7 @@ function results = plot_ai_pid_heading_curves(varargin)
     fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
 end
 
-function cfg = buildConfig(scriptDir, opts, showFigures, saveMatFigures, ...
+function cfg = buildConfig(scriptDir, opts, showFigures, saveEpsFigures, ...
     normalizeTimeToZero, unwrapHeading, outputRoot, readMode, delimiter, ...
     timeColumn, currentHeadingColumn, expectedHeadingColumn)
 
@@ -131,7 +131,7 @@ cfg.OutputRoot = resolveFolderPath(cfg.OutputRoot, scriptDir);
 cfg.RunStamp = char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'));
 cfg.RunOutputRoot = fullfile(cfg.OutputRoot, ['run_' cfg.RunStamp]);
 cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', showFigures));
-cfg.SaveMatFigures = logical(getOption(opts, 'SaveMatFigures', saveMatFigures));
+cfg.SaveEpsFigures = logical(getOption(opts, 'SaveEpsFigures', saveEpsFigures));
 cfg.NormalizeTimeToZero = logical(getOption(opts, 'NormalizeTimeToZero', normalizeTimeToZero));
 cfg.UnwrapHeading = logical(getOption(opts, 'UnwrapHeading', unwrapHeading));
 cfg.ReadMode = parseReadMode(getOption(opts, 'ReadMode', readMode));
@@ -652,15 +652,14 @@ fieldNames = fieldnames(figureFiles);
 for i = 1:numel(fieldNames)
     fieldName = fieldNames{i};
     fieldValue = figureFiles.(fieldName);
-    if isstruct(fieldValue) && isfield(fieldValue, 'png')
+    if isstruct(fieldValue) && isfield(fieldValue, 'eps')
         if isempty(prefix)
             labelPrefix = fieldName;
         else
             labelPrefix = [prefix '_' fieldName];
         end
-        fprintf(fid, '%s PNG 图片: %s\n', labelPrefix, fieldValue.png);
-        if isfield(fieldValue, 'fig') && ~isempty(fieldValue.fig)
-            fprintf(fid, '%s MATLAB 图窗文件 FIG: %s\n', labelPrefix, fieldValue.fig);
+        if ~isempty(fieldValue.eps)
+            fprintf(fid, '%s EPS 矢量图: %s\n', labelPrefix, fieldValue.eps);
         end
     elseif isstruct(fieldValue)
         if isempty(prefix)
@@ -994,21 +993,13 @@ end
 
 function figureFiles = saveFigureBundle(fig, basePath, cfg)
 ensureFolder(fileparts(basePath));
+figureFiles = struct('eps', '');
+drawnow;
 
-pngPath = [basePath '.png'];
-if exist('exportgraphics', 'file') == 2 || exist('exportgraphics', 'builtin') == 5
-    exportgraphics(fig, pngPath, 'Resolution', 180);
-else
-    saveas(fig, pngPath);
-end
-
-figureFiles = struct();
-figureFiles.png = pngPath;
-
-if cfg.SaveMatFigures
-    figPath = [basePath '.fig'];
-    savefig(fig, figPath);
-    figureFiles.fig = figPath;
+if cfg.SaveEpsFigures
+    epsPath = [basePath '.eps'];
+    exportgraphics(fig, epsPath, 'ContentType', 'vector');
+    figureFiles.eps = epsPath;
 end
 
 if ~cfg.ShowFigures
