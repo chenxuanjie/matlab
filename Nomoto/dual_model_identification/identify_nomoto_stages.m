@@ -15,7 +15,7 @@ useRateFilter = true;
 showFigures = true;
 %
 % 是否额外保存 EPS 矢量图
-saveEpsFigures = true;
+saveEpsFigures = false;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
@@ -26,7 +26,16 @@ uTrim = 0;
 % 角速度移动平均滤波窗口长度。越大越平滑，但边沿会更钝
 rateFilterWindow = 7;
 %
-% stage1 尾段比例与最少样本数
+% stage1 稳态筛样参数。
+% 1) 先去掉前面加速段：当 |r| 达到稳态中心值的该比例后，认为进入稳态
+% 2) 再在后面保留落在稳态角速度范围内的样本
+% 3) 最后按单次拟合残差剔除特别离谱的点
+stage1SteadyEnterRatio = 0.85;
+stage1SteadyRateTolDegS = 3.0;
+stage1SteadyRateTolRatio = 0.15;
+stage1ResidualTolDegS = 1.5;
+stage1ResidualTolSigma = 3.0;
+stage1SteadyMinSamples = 20;
 stage1TailFraction = 0.30;
 stage1TailMinSamples = 30;
 %
@@ -59,6 +68,12 @@ if nargin < 2 || isempty(opts)
     opts.ShowFigures = showFigures;
     opts.SaveEpsFigures = saveEpsFigures;
     opts.RateFilterWindow = rateFilterWindow;
+    opts.Stage1SteadyEnterRatio = stage1SteadyEnterRatio;
+    opts.Stage1SteadyRateTolDegS = stage1SteadyRateTolDegS;
+    opts.Stage1SteadyRateTolRatio = stage1SteadyRateTolRatio;
+    opts.Stage1ResidualTolDegS = stage1ResidualTolDegS;
+    opts.Stage1ResidualTolSigma = stage1ResidualTolSigma;
+    opts.Stage1SteadyMinSamples = stage1SteadyMinSamples;
     opts.Stage1TailFraction = stage1TailFraction;
     opts.Stage1TailMinSamples = stage1TailMinSamples;
     opts.UTrim = uTrim;
@@ -252,7 +267,13 @@ cfg.EnableJointFallback = logical(getOption(opts, 'EnableJointFallback', true));
 cfg.EnableRateFilter = logical(getOption(opts, 'EnableRateFilter', true));
 % 常改 5：角速度滤波窗口。越大越平滑，但会更钝化边沿。
 cfg.RateFilterWindow = max(1, round(getOption(opts, 'RateFilterWindow', 7)));
-% 常改 6：stage1 尾段取样比例和最少样本数。
+% 常改 6：stage1 稳态筛样参数；尾段取样仅在筛样失败时回退。
+cfg.Stage1SteadyEnterRatio = getOption(opts, 'Stage1SteadyEnterRatio', 0.85);
+cfg.Stage1SteadyRateTolDegS = getOption(opts, 'Stage1SteadyRateTolDegS', 3.0);
+cfg.Stage1SteadyRateTolRatio = getOption(opts, 'Stage1SteadyRateTolRatio', 0.15);
+cfg.Stage1ResidualTolDegS = getOption(opts, 'Stage1ResidualTolDegS', 1.5);
+cfg.Stage1ResidualTolSigma = getOption(opts, 'Stage1ResidualTolSigma', 3.0);
+cfg.Stage1SteadyMinSamples = max(5, round(getOption(opts, 'Stage1SteadyMinSamples', 20)));
 cfg.Stage1TailFraction = getOption(opts, 'Stage1TailFraction', 0.30);
 cfg.Stage1TailMinSamples = max(10, round(getOption(opts, 'Stage1TailMinSamples', 30)));
 cfg.UTrim = getOption(opts, 'UTrim', 0.0);
@@ -691,8 +712,8 @@ if ~skipGps && all(isfinite(data.longitude)) && all(isfinite(data.latitude))
     scatter(data.longitude(end), data.latitude(end), 60, 'r', 'filled');
     applyAxesStyle(style);
     axis equal;
-    xlabel('经度');
-    ylabel('纬度');
+    xlabel('经度 (°E)');
+    ylabel('纬度 (°N)');
     title(sprintf('阶段%d 经纬度散点图', data.stageId));
     c = colorbar;
     ylabel(c, '时间 (s)');
@@ -706,77 +727,109 @@ end
 
 function stageResult = identifyStage1K(data, stageFolder, cfg)
 style = plotStyle();
-tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * data.sampleCount));
-tailCount = min(tailCount, data.sampleCount);
-tailIdx = (data.sampleCount - tailCount + 1):data.sampleCount;
-
-uTail = data.uModelPwm(tailIdx);
-rTail = data.yawRateRadSFiltered(tailIdx);
-den = sum(uTail .* uTail);
-if den <= eps
-    error('阶段1的输入幅值过小，无法稳定辨识 K。');
+posInfo = emptyStage1SteadyInfo();
+negInfo = emptyStage1SteadyInfo();
+hasPos = nnz(columnVector(data.analysisMask) & (columnVector(data.uModelPwm) > cfg.MinInputAbs)) >= 5;
+hasNeg = nnz(columnVector(data.analysisMask) & (columnVector(data.uModelPwm) < -cfg.MinInputAbs)) >= 5;
+if hasPos
+    posInfo = selectStage1SteadySamples(data, cfg, 'positive');
+end
+if hasNeg
+    negInfo = selectStage1SteadySamples(data, cfg, 'negative');
 end
 
-uTailPos = max(uTail, 0);
-uTailNeg = min(uTail, 0);
-posMask = uTail > 0;
-negMask = uTail < 0;
-
-KPos = fitBranchGain(uTailPos(posMask), rTail(posMask));
-KNeg = fitBranchGain(uTailNeg(negMask), rTail(negMask));
+KPos = fitBranchGain(posInfo.uSel, posInfo.rSel);
+KNeg = fitBranchGain(negInfo.uSel, negInfo.rSel);
 gainSpec = struct('K_pos', KPos, 'K_neg', KNeg);
-rTailHat = branchWeightedInput(uTail, gainSpec);
-rSteadyHat = mean(rTailHat);
 
 stageResult = struct();
-stageResult.method = 'steady_tail_least_squares_dual_branch_init';
+stageResult.method = 'steady_rate_band_dual_branch_init';
 stageResult.K_pos = KPos;
 stageResult.K_neg = KNeg;
 stageResult.K = equivalentBranchK(KPos, KNeg);
 stageResult.asymmetry_ratio = safeBranchRatio(KNeg, KPos);
-stageResult.tail_sample_count = tailCount;
-stageResult.mean_half_pwm = mean(uTail);
-stageResult.mean_positive_half_pwm = maskedMean(uTail(posMask));
-stageResult.mean_negative_half_pwm = maskedMean(uTail(negMask));
-stageResult.branch_sample_count_pos = nnz(posMask);
-stageResult.branch_sample_count_neg = nnz(negMask);
-stageResult.mean_yaw_rate_deg_s = rad2deg(mean(rTail));
-stageResult.steady_yaw_rate_hat_deg_s = rad2deg(rSteadyHat);
-stageResult.mean_speed_mps = meanFinite(data.speedMps(tailIdx));
-stageResult.turning_radius_m = estimateTurningRadius(stageResult.mean_speed_mps, mean(rTail));
+stageResult.sample_count = numel(posInfo.selectedIdx) + numel(negInfo.selectedIdx);
+stageResult.tail_sample_count = stageResult.sample_count;
+stageResult.mean_half_pwm = meanFinite([posInfo.uSel; negInfo.uSel]);
+stageResult.mean_positive_half_pwm = meanFinite(posInfo.uSel);
+stageResult.mean_negative_half_pwm = meanFinite(negInfo.uSel);
+stageResult.branch_sample_count_pos = numel(posInfo.selectedIdx);
+stageResult.branch_sample_count_neg = numel(negInfo.selectedIdx);
+stageResult.mean_yaw_rate_deg_s = rad2deg(meanFinite([posInfo.rSel; negInfo.rSel]));
+stageResult.steady_yaw_rate_hat_deg_s = rad2deg(meanFinite([KPos * posInfo.uSel; KNeg * negInfo.uSel]));
+stageResult.mean_speed_mps = meanFinite([posInfo.speedSel; negInfo.speedSel]);
+stageResult.turning_radius_m = estimateTurningRadius(stageResult.mean_speed_mps, meanFinite([posInfo.rSel; negInfo.rSel]));
 stageResult.turning_diameter_m = 2 * stageResult.turning_radius_m;
-stageResult.rmse_tail_rad_s = nomoto_utils.rmse(rTail, rTailHat);
-stageResult.r2_tail = nomoto_utils.rsquared(rTail, rTailHat);
+stageResult.rmse_tail_rad_s = nomoto_utils.rmse( ...
+    [posInfo.rSel; negInfo.rSel], ...
+    [KPos * posInfo.uSel; KNeg * negInfo.uSel]);
+stageResult.r2_tail = nomoto_utils.rsquared( ...
+    [posInfo.rSel; negInfo.rSel], ...
+    [KPos * posInfo.uSel; KNeg * negInfo.uSel]);
+stageResult.selection_mode_pos = posInfo.mode;
+stageResult.selection_mode_neg = negInfo.mode;
+stageResult.steady_center_pos_deg_s = rad2deg(posInfo.rRef);
+stageResult.steady_center_neg_deg_s = rad2deg(negInfo.rRef);
+stageResult.residual_threshold_pos_deg_s = rad2deg(posInfo.residualTol);
+stageResult.residual_threshold_neg_deg_s = rad2deg(negInfo.residualTol);
+stageResult.residual_removed_count_pos = posInfo.residualRemovedCount;
+stageResult.residual_removed_count_neg = negInfo.residualRemovedCount;
 
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-K辨识');
 tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
+hMeasured = plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
 hold on;
-plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
-xline(data.timeS(tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
-yline(rad2deg(rSteadyHat), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
+hFiltered = plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+legendHandles = [hMeasured, hFiltered];
+legendLabels = {'实测值', '滤波值'};
+if ~isempty(posInfo.selectedIdx)
+    hPos = scatter(data.timeS(posInfo.selectedIdx), rad2deg(data.yawRateRadSFiltered(posInfo.selectedIdx)), ...
+        26, style.headingColor, 'filled', 'DisplayName', '正向筛选样本');
+    legendHandles(end + 1) = hPos; %#ok<AGROW>
+    legendLabels{end + 1} = '正向筛选样本'; %#ok<AGROW>
+end
+if ~isempty(negInfo.selectedIdx)
+    hNeg = scatter(data.timeS(negInfo.selectedIdx), rad2deg(data.yawRateRadSFiltered(negInfo.selectedIdx)), ...
+        26, style.pointColor, 'filled', 'DisplayName', '反向筛选样本');
+    legendHandles(end + 1) = hNeg; %#ok<AGROW>
+    legendLabels{end + 1} = '反向筛选样本'; %#ok<AGROW>
+end
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段1 双支路稳态初值，K+ = %.6g，K- = %.6g', KPos, KNeg));
-legend({'实测值', '滤波值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
+title(sprintf('阶段1 双支路稳态范围筛选，K+ = %.6g，K- = %.6g', KPos, KNeg));
+legend(legendHandles, legendLabels, 'Location', 'best');
 hold off;
 
 nexttile;
-scatter(uTail, rad2deg(rTail), 18, style.pointColor, 'filled');
+legendHandles = gobjects(0);
+legendLabels = {};
 hold on;
-xFit = linspace(min(uTail), max(uTail), 100).';
-if isscalar(unique(uTail))
-    xFit = linspace(min(uTail) - 5, max(uTail) + 5, 100).';
+if ~isempty(posInfo.uSel)
+    hPosFit = scatter(posInfo.uSel, rad2deg(posInfo.rSel), 24, style.headingColor, 'filled');
+    legendHandles(end + 1) = hPosFit; %#ok<AGROW>
+    legendLabels{end + 1} = '正向筛选样本'; %#ok<AGROW>
+    xFitPos = buildFitAxis(posInfo.uSel);
+    hFitPos = plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+    legendHandles(end + 1) = hFitPos; %#ok<AGROW>
+    legendLabels{end + 1} = 'r = K+ (u-u_{trim})'; %#ok<AGROW>
 end
-plot(xFit, rad2deg(branchWeightedInput(xFit, gainSpec)), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+if ~isempty(negInfo.uSel)
+    hNegFit = scatter(negInfo.uSel, rad2deg(negInfo.rSel), 24, style.pointColor, 'filled');
+    legendHandles(end + 1) = hNegFit; %#ok<AGROW>
+    legendLabels{end + 1} = '反向筛选样本'; %#ok<AGROW>
+    xFitNeg = buildFitAxis(negInfo.uSel);
+    hFitNeg = plot(xFitNeg, rad2deg(KNeg * xFitNeg), '--', 'Color', style.inputColor, 'LineWidth', 1.3);
+    legendHandles(end + 1) = hFitNeg; %#ok<AGROW>
+    legendLabels{end + 1} = 'r = K- (u-u_{trim})'; %#ok<AGROW>
+end
 applyAxesStyle(style);
 xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
-title('阶段1 双支路稳态尾段样本与最小二乘拟合');
-legend({'尾段样本', 'r = K(u-u_{trim})'}, 'Location', 'best');
+title('阶段1 双支路稳态样本与最小二乘拟合');
+legend(legendHandles, legendLabels, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K'), cfg);
@@ -793,25 +846,25 @@ else
     dataNeg = dataA;
 end
 
-[KPos, tailPos] = estimateStage1Branch(dataPos, cfg);
-[KNeg, tailNeg] = estimateStage1Branch(dataNeg, cfg);
+[KPos, tailPos] = estimateStage1Branch(dataPos, cfg, 'positive');
+[KNeg, tailNeg] = estimateStage1Branch(dataNeg, cfg, 'negative');
 
 stageResult = struct();
-stageResult.method = 'steady_tail_least_squares_dual_files';
+stageResult.method = 'steady_rate_band_dual_files';
 stageResult.K_pos = KPos;
 stageResult.K_neg = KNeg;
 stageResult.K = equivalentBranchK(KPos, KNeg);
 stageResult.asymmetry_ratio = safeBranchRatio(KNeg, KPos);
-stageResult.tail_sample_count_pos = tailPos.tailCount;
-stageResult.tail_sample_count_neg = tailNeg.tailCount;
-stageResult.mean_positive_half_pwm = mean(tailPos.uTail);
-stageResult.mean_negative_half_pwm = mean(tailNeg.uTail);
-stageResult.mean_yaw_rate_pos_deg_s = rad2deg(mean(tailPos.rTail));
-stageResult.mean_yaw_rate_neg_deg_s = rad2deg(mean(tailNeg.rTail));
-stageResult.mean_speed_pos_mps = meanFinite(dataPos.speedMps(tailPos.tailIdx));
-stageResult.mean_speed_neg_mps = meanFinite(dataNeg.speedMps(tailNeg.tailIdx));
-stageResult.turning_radius_pos_m = estimateTurningRadius(stageResult.mean_speed_pos_mps, mean(tailPos.rTail));
-stageResult.turning_radius_neg_m = estimateTurningRadius(stageResult.mean_speed_neg_mps, abs(mean(tailNeg.rTail)));
+stageResult.tail_sample_count_pos = numel(tailPos.selectedIdx);
+stageResult.tail_sample_count_neg = numel(tailNeg.selectedIdx);
+stageResult.mean_positive_half_pwm = mean(tailPos.uSel);
+stageResult.mean_negative_half_pwm = mean(tailNeg.uSel);
+stageResult.mean_yaw_rate_pos_deg_s = rad2deg(mean(tailPos.rSel));
+stageResult.mean_yaw_rate_neg_deg_s = rad2deg(mean(tailNeg.rSel));
+stageResult.mean_speed_pos_mps = meanFinite(tailPos.speedSel);
+stageResult.mean_speed_neg_mps = meanFinite(tailNeg.speedSel);
+stageResult.turning_radius_pos_m = estimateTurningRadius(stageResult.mean_speed_pos_mps, mean(tailPos.rSel));
+stageResult.turning_radius_neg_m = estimateTurningRadius(stageResult.mean_speed_neg_mps, abs(mean(tailNeg.rSel)));
 radiusValues = [stageResult.turning_radius_pos_m, stageResult.turning_radius_neg_m];
 radiusValues = radiusValues(isfinite(radiusValues));
 if isempty(radiusValues)
@@ -821,60 +874,72 @@ else
 end
 stageResult.turning_diameter_m = 2 * stageResult.turning_radius_m;
 stageResult.mean_speed_mps = meanFinite([stageResult.mean_speed_pos_mps; stageResult.mean_speed_neg_mps]);
-stageResult.rmse_tail_rad_s = nomoto_utils.rmse([tailPos.rTail; tailNeg.rTail], [tailPos.rTailHat; tailNeg.rTailHat]);
-stageResult.r2_tail = nomoto_utils.rsquared([tailPos.rTail; tailNeg.rTail], [tailPos.rTailHat; tailNeg.rTailHat]);
+stageResult.rmse_tail_rad_s = nomoto_utils.rmse([tailPos.rSel; tailNeg.rSel], [KPos * tailPos.uSel; KNeg * tailNeg.uSel]);
+stageResult.r2_tail = nomoto_utils.rsquared([tailPos.rSel; tailNeg.rSel], [KPos * tailPos.uSel; KNeg * tailNeg.uSel]);
+stageResult.selection_mode_pos = tailPos.mode;
+stageResult.selection_mode_neg = tailNeg.mode;
+stageResult.residual_threshold_pos_deg_s = rad2deg(tailPos.residualTol);
+stageResult.residual_threshold_neg_deg_s = rad2deg(tailNeg.residualTol);
+stageResult.residual_removed_count_pos = tailPos.residualRemovedCount;
+stageResult.residual_removed_count_neg = tailNeg.residualRemovedCount;
 
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-双定常回转 K 辨识');
 tiledlayout(fig, 2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
-plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
+hMeasured = plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
 hold on;
-plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
-xline(dataPos.timeS(tailPos.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
-yline(rad2deg(mean(tailPos.rTailHat)), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
+hFiltered = plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+hSelected = scatter(dataPos.timeS(tailPos.selectedIdx), rad2deg(dataPos.yawRateRadSFiltered(tailPos.selectedIdx)), ...
+    26, style.headingColor, 'filled', 'DisplayName', '筛选样本');
+hStart = xline(tailPos.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
+hCenter = yline(rad2deg(tailPos.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('正向定常回转，K+ = %.6g', KPos));
-legend({'实测值', '处理值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
+title(sprintf('正向稳态范围筛选，K+ = %.6g', KPos));
+legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
+    {'实测值', '处理值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
 nexttile;
-plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
+hMeasured = plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
 hold on;
-plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
-xline(dataNeg.timeS(tailNeg.tailIdx(1)), '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
-yline(rad2deg(mean(tailNeg.rTailHat)), '--', 'Color', style.inputColor, 'LineWidth', 1.0);
+hFiltered = plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+hSelected = scatter(dataNeg.timeS(tailNeg.selectedIdx), rad2deg(dataNeg.yawRateRadSFiltered(tailNeg.selectedIdx)), ...
+    26, style.pointColor, 'filled', 'DisplayName', '筛选样本');
+hStart = xline(tailNeg.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
+hCenter = yline(rad2deg(tailNeg.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('反向定常回转，K- = %.6g', KNeg));
-legend({'实测值', '处理值', '尾段起点', '稳态拟合值'}, 'Location', 'best');
+title(sprintf('反向稳态范围筛选，K- = %.6g', KNeg));
+legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
+    {'实测值', '处理值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
 nexttile;
-scatter(tailPos.uTail, rad2deg(tailPos.rTail), 18, style.pointColor, 'filled');
+hRepPos = scatter(tailPos.uSel, rad2deg(tailPos.rSel), 24, style.headingColor, 'filled');
 hold on;
-xFitPos = linspace(min(tailPos.uTail), max(tailPos.uTail), 100).';
-plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+xFitPos = buildFitAxis(tailPos.uSel);
+hFitPos = plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
 xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
-title('正向尾段样本拟合');
-legend({'尾段样本', 'r = K+ (u-u_{trim})'}, 'Location', 'best');
+title('正向稳态样本拟合');
+legend([hRepPos, hFitPos], {'筛选样本', 'r = K+ (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
 nexttile;
-scatter(tailNeg.uTail, rad2deg(tailNeg.rTail), 18, style.pointColor, 'filled');
+hRepNeg = scatter(tailNeg.uSel, rad2deg(tailNeg.rSel), 24, style.pointColor, 'filled');
 hold on;
-xFitNeg = linspace(min(tailNeg.uTail), max(tailNeg.uTail), 100).';
-plot(xFitNeg, rad2deg(KNeg * xFitNeg), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
+xFitNeg = buildFitAxis(tailNeg.uSel);
+hFitNeg = plot(xFitNeg, rad2deg(KNeg * xFitNeg), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
 xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
-title('反向尾段样本拟合');
-legend({'尾段样本', 'r = K- (u-u_{trim})'}, 'Location', 'best');
+title('反向稳态样本拟合');
+legend([hRepNeg, hFitNeg], {'筛选样本', 'r = K- (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
@@ -907,8 +972,8 @@ scatter(dataB.longitude(end), dataB.latitude(end), 60, 'r', 'filled', 'Marker', 
 
     applyAxesStyle(style);
     axis equal;
-    xlabel('经度');
-ylabel('纬度');
+    xlabel('经度 (°E)');
+ylabel('纬度 (°N)');
 title(sprintf('阶段%d 双定常回转轨迹散点图', dataA.stageId));
 c = colorbar;
 ylabel(c, '时间 (s)');
@@ -918,25 +983,172 @@ hold off;
 gpsFigure = saveFigureBundle(figMap, fullfile(stageFolder, sprintf('stage%d_gps', dataA.stageId)), cfg);
 end
 
-function [K, tailInfo] = estimateStage1Branch(data, cfg)
-tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * data.sampleCount));
-tailCount = min(tailCount, data.sampleCount);
-tailIdx = (data.sampleCount - tailCount + 1):data.sampleCount;
-
-uTail = data.uModelPwm(tailIdx);
-rTail = data.yawRateRadSFiltered(tailIdx);
-den = sum(uTail .* uTail);
-if den <= eps
-    error('stage1 定常回转尾段输入过小，无法稳定辨识支路增益。');
+function [K, tailInfo] = estimateStage1Branch(data, cfg, signMode)
+tailInfo = selectStage1SteadySamples(data, cfg, signMode);
+K = fitBranchGain(tailInfo.uSel, tailInfo.rSel);
+if ~isfinite(K)
+    error('stage1 稳态筛选后的输入过小，无法稳定辨识支路增益。');
+end
 end
 
-K = sum(uTail .* rTail) / den;
-tailInfo = struct();
-tailInfo.tailCount = tailCount;
-tailInfo.tailIdx = tailIdx;
-tailInfo.uTail = uTail;
-tailInfo.rTail = rTail;
-tailInfo.rTailHat = K * uTail;
+function steadyInfo = emptyStage1SteadyInfo()
+steadyInfo = struct( ...
+    'mode', 'empty', ...
+    'selectedIdx', zeros(0, 1), ...
+    'startTime', NaN, ...
+    'rRef', NaN, ...
+    'rateTol', NaN, ...
+    'residualTol', NaN, ...
+    'residualRemovedCount', 0, ...
+    'uSel', zeros(0, 1), ...
+    'rSel', zeros(0, 1), ...
+    'speedSel', zeros(0, 1));
+end
+
+function steadyInfo = selectStage1SteadySamples(data, cfg, signMode)
+timeS = columnVector(data.timeS);
+u = columnVector(data.uModelPwm);
+r = columnVector(data.yawRateRadSFiltered);
+speedMps = columnVector(data.speedMps);
+baseMask = columnVector(data.analysisMask);
+baseMask = baseMask & isfinite(timeS) & isfinite(u) & isfinite(r);
+
+switch lower(string(signMode))
+    case "positive"
+        baseMask = baseMask & (u > cfg.MinInputAbs);
+    case "negative"
+        baseMask = baseMask & (u < -cfg.MinInputAbs);
+    otherwise
+        baseMask = baseMask & (abs(u) >= cfg.MinInputAbs);
+end
+
+validIdx = find(baseMask);
+if numel(validIdx) < 5
+    error('阶段1有效样本不足，无法稳定辨识 K。');
+end
+
+tailCount = max(cfg.Stage1TailMinSamples, ceil(cfg.Stage1TailFraction * numel(validIdx)));
+tailCount = min(tailCount, numel(validIdx));
+tailIdx = validIdx(end - tailCount + 1:end);
+if isempty(tailIdx)
+    error('阶段1无法获得稳态中心值。');
+end
+
+steadyInfo = emptyStage1SteadyInfo();
+rRef = median(r(tailIdx), 'omitnan');
+if ~(isfinite(rRef) && abs(rRef) > eps)
+    rRef = mean(r(tailIdx), 'omitnan');
+end
+if ~(isfinite(rRef) && abs(rRef) > eps)
+    rRef = median(r(validIdx), 'omitnan');
+end
+if ~(isfinite(rRef) && abs(rRef) > eps)
+    error('阶段1无法得到有效的稳态角速度中心值。');
+end
+
+enterThreshold = cfg.Stage1SteadyEnterRatio * abs(rRef);
+rateTol = max(deg2rad(cfg.Stage1SteadyRateTolDegS), cfg.Stage1SteadyRateTolRatio * abs(rRef));
+
+enterIdx = validIdx(find(abs(r(validIdx)) >= enterThreshold, 1, 'first'));
+if isempty(enterIdx)
+    enterIdx = tailIdx(1);
+end
+
+selectedIdx = validIdx(validIdx >= enterIdx & abs(r(validIdx) - rRef) <= rateTol);
+mode = 'steady_rate_band';
+
+if numel(selectedIdx) < cfg.Stage1SteadyMinSamples
+    rateTol = 1.5 * rateTol;
+    selectedIdx = validIdx(validIdx >= enterIdx & abs(r(validIdx) - rRef) <= rateTol);
+    mode = 'steady_rate_band_relaxed';
+end
+
+if numel(selectedIdx) < max(5, min(cfg.Stage1SteadyMinSamples, numel(validIdx)))
+    selectedIdx = tailIdx;
+    mode = 'tail_fallback';
+    rRef = median(r(selectedIdx), 'omitnan');
+    rateTol = max(abs(r(selectedIdx) - rRef));
+    enterIdx = selectedIdx(1);
+end
+
+[selectedIdx, residualInfo] = refineStage1ResidualSamples(u, r, selectedIdx, cfg);
+if residualInfo.applied
+    mode = [mode '_residual'];
+end
+
+steadyInfo.mode = mode;
+steadyInfo.selectedIdx = columnVector(selectedIdx);
+steadyInfo.startTime = timeS(selectedIdx(1));
+steadyInfo.rRef = rRef;
+steadyInfo.rateTol = rateTol;
+steadyInfo.residualTol = residualInfo.threshold;
+steadyInfo.residualRemovedCount = residualInfo.removedCount;
+steadyInfo.uSel = u(selectedIdx);
+steadyInfo.rSel = r(selectedIdx);
+steadyInfo.speedSel = speedMps(selectedIdx);
+end
+
+function [selectedIdx, residualInfo] = refineStage1ResidualSamples(u, r, selectedIdx, cfg)
+selectedIdx = columnVector(selectedIdx);
+residualInfo = struct('applied', false, 'threshold', NaN, 'removedCount', 0);
+if numel(selectedIdx) < max(5, min(cfg.Stage1SteadyMinSamples, numel(selectedIdx)))
+    return;
+end
+
+uSel = u(selectedIdx);
+rSel = r(selectedIdx);
+K0 = fitBranchGain(uSel, rSel);
+if ~isfinite(K0)
+    return;
+end
+
+residual = rSel - K0 * uSel;
+residualCenter = median(residual, 'omitnan');
+residualMad = median(abs(residual - residualCenter), 'omitnan');
+residualScale = 1.4826 * residualMad;
+if ~(isfinite(residualScale) && residualScale > eps)
+    residualScale = std(residual, 'omitnan');
+end
+
+threshold = max(deg2rad(cfg.Stage1ResidualTolDegS), cfg.Stage1ResidualTolSigma * residualScale);
+if ~(isfinite(threshold) && threshold > 0)
+    return;
+end
+
+inlierMask = abs(residual) <= threshold;
+if all(inlierMask)
+    residualInfo.threshold = threshold;
+    return;
+end
+
+minKeep = max(5, min(cfg.Stage1SteadyMinSamples, numel(selectedIdx)));
+if nnz(inlierMask) < minKeep
+    return;
+end
+
+selectedIdx = selectedIdx(inlierMask);
+residualInfo.applied = true;
+residualInfo.threshold = threshold;
+residualInfo.removedCount = nnz(~inlierMask);
+end
+
+function xFit = buildFitAxis(values)
+values = columnVector(values);
+values = values(isfinite(values));
+if isempty(values)
+    xFit = linspace(-1, 1, 100).';
+    return;
+end
+
+vmin = min(values);
+vmax = max(values);
+if abs(vmax - vmin) < eps
+    pad = max(5, 0.15 * max(abs(vmax), 1));
+    xFit = linspace(vmin - pad, vmax + pad, 100).';
+else
+    pad = 0.08 * (vmax - vmin);
+    xFit = linspace(vmin - pad, vmax + pad, 100).';
+end
 end
 
 function [stageResult, params] = identifyStage2T(data, params, stageFolder, cfg)
@@ -1150,10 +1362,7 @@ stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonl
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_error_max_abs_deg = max(abs(headingErrorDeg));
 
-fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4模型验证');
-tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
-
-nexttile;
+figYawRate = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4角速度验证');
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.measuredColor, 'LineWidth', 1.1);
 hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
@@ -1164,7 +1373,7 @@ title('阶段4 角速度验证');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
-nexttile;
+figHeading = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4航向角验证');
 plot(data.timeS, data.headingRelDeg, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
 hold on;
 plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
@@ -1175,7 +1384,11 @@ title('阶段4 航向角验证');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
-stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage4_validation'), cfg);
+stageResult.yaw_rate_figure = saveFigureBundle(figYawRate, fullfile(stageFolder, 'stage4_yaw_rate_validation'), cfg);
+stageResult.heading_figure = saveFigureBundle(figHeading, fullfile(stageFolder, 'stage4_heading_validation'), cfg);
+stageResult.figure = struct( ...
+    'yaw_rate', stageResult.yaw_rate_figure, ...
+    'heading', stageResult.heading_figure);
 
 figErr = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4航向角误差');
 plot(data.timeS, headingErrorDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
@@ -1184,8 +1397,8 @@ yline(0, '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角误差 (deg)');
-title(sprintf('阶段4 航向角误差（实测 - 模型），RMSE = %.3f deg', stageResult.heading_rmse_deg));
-legend({'滤波值', '非线性模型'}, 'Location', 'best');
+title(sprintf('阶段4 航向角误差，RMSE = %.3f deg', stageResult.heading_rmse_deg));
+legend({'实测-模型误差', '零误差参考线'}, 'Location', 'best');
 hold off;
 
 stageResult.heading_error_figure = saveFigureBundle(figErr, fullfile(stageFolder, 'stage4_heading_error'), cfg);
