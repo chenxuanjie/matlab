@@ -693,15 +693,7 @@ xlabel('时间 (s)');
 title('线速度随时间变化');
 
 overviewFiles.overview = saveFigureBundle(fig, fullfile(stageFolder, sprintf('stage%d_overview', data.stageId)), cfg);
-
-figAccel = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
-    'Name', sprintf('stage%d_yaw_accel', data.stageId));
-plot(data.timeS, rad2deg(data.yawAccelRadS2), '-', 'Color', style.measuredColor, 'LineWidth', 1.15);
-applyAxesStyle(style);
-xlabel('时间 (s)');
-ylabel('角加速度 (deg/s^2)');
-title(sprintf('阶段%d 角加速度随时间变化', data.stageId));
-overviewFiles.yaw_accel = saveFigureBundle(figAccel, fullfile(stageFolder, sprintf('stage%d_yaw_accel', data.stageId)), cfg);
+overviewFiles.yaw_accel = struct('eps', '', 'fig', '');
 
 if ~skipGps && all(isfinite(data.longitude)) && all(isfinite(data.latitude))
     figMap = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
