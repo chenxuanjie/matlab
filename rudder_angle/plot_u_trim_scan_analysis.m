@@ -4,16 +4,11 @@
 % 2. 重点提取 row_type = point_summary 的扫描点结果。
 % 3. 建立 PWM 差值 -> 平均角速度 的关系，并绘制多种图形。
 % 4. 通过线性插值或拟合方法，估计“角速度为 0”时的直行补偿量。
-% 5. 按线性满量程假设，将直行补偿量换算为“等效偏舵角”。
 %
 % 重要说明：
-% 1. 当前 CSV 中没有“真实舵角”列，因此这里输出的是等效偏舵角：
-%
-%       equivalent_bias_deg = pwm_diff / pwmDiffFullScale * equivalentDeltaAtFullScaleDeg
-%
-% 2. 默认优先使用线性插值；当扫描点没有跨过 0 deg/s 时，可回退到最近点，
+% 1. 默认优先使用线性插值；当扫描点没有跨过 0 deg/s 时，可回退到最近点，
 %    或将 primaryZeroSolveMethod 改为 poly1 / poly2 做拟合求根。
-% 3. 本脚本默认先扫描 experiment_tests；如果没有可用 CSV，会回退到
+% 2. 本脚本默认先扫描 experiment_tests；如果没有可用 CSV，会回退到
 %    origin_experiment_test。
 
 clc;
@@ -61,11 +56,6 @@ fallbackZeroSolveMethod = 'nearest';
 % 1 = 直线拟合
 % 2 = 二次拟合
 aggregateFitDegree = 1;
-
-% PWM 差值满量程与等效偏舵角映射
-% 该约定与 Nomoto 相关脚本中的线性满量程映射保持一致。
-pwmDiffFullScale = 1000;
-equivalentDeltaAtFullScaleDeg = 15;
 
 % 是否显示各类图形
 showControllerOutputFigure = true;
@@ -121,9 +111,7 @@ for i = 1:numel(csvFiles)
     currentRun = loadUTrimScanRun( ...
         csvFiles{i}, ...
         primaryZeroSolveMethod, ...
-        fallbackZeroSolveMethod, ...
-        pwmDiffFullScale, ...
-        equivalentDeltaAtFullScaleDeg);
+        fallbackZeroSolveMethod);
 
     if currentRun.validPointCount < 2
         skippedFiles(end + 1, 1) = string(currentRun.fileName); %#ok<AGROW>
@@ -148,14 +136,30 @@ summaryTable = buildSummaryTable(runs);
 
 fprintf('\n每次实验的直行补偿结果：\n');
 disp(summaryTable);
+fprintf('说明：PWM半差值舍弃小数部分；summaryTable.TrimU 仍保留精确半差值。\n');
+for i = 1:height(summaryTable)
+    fprintf('  [%d] %s: TrimPwmDiff = %.6f, U = %d\n', ...
+        i, summaryTable.FileName(i), summaryTable.TrimPwmDiff(i), fix(summaryTable.TrimU(i)));
+end
 
 allPwmDiff = vertcat(runs.scanPwmDiff);
 allYawRate = vertcat(runs.scanYawRateMeanDegPerSec);
 
 aggregateStats = buildAggregateStats(allPwmDiff, allYawRate);
+aggregateTable = table( ...
+    aggregateStats.pwmDiff, ...
+    aggregateStats.meanYawRate, ...
+    aggregateStats.sampleCount, ...
+    aggregateStats.stdYawRate, ...
+    aggregateStats.semYawRate, ...
+    'VariableNames', { ...
+    'PwmDiff', 'MeanYawRateDegPerSec', 'SampleCount', ...
+    'StdYawRateDegPerSec', 'SemYawRateDegPerSec'});
 aggregateFit = fitAggregateTrend( ...
-    aggregateStats, aggregateFitDegree, summaryTable.TrimPwmDiff, ...
-    pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
+    aggregateStats, aggregateFitDegree, summaryTable.TrimPwmDiff);
+
+fprintf('\n各 PWM 差值对应的角速度均值统计：\n');
+disp(aggregateTable);
 
 results = struct();
 results.generatedAt = char(datetime('now', 'Format', 'yyyy-MM-dd HH:mm:ss'));
@@ -165,6 +169,7 @@ results.skippedFiles = skippedFiles;
 results.runs = runs;
 results.summaryTable = summaryTable;
 results.aggregateStats = aggregateStats;
+results.aggregateTable = aggregateTable;
 results.aggregateFit = aggregateFit;
 results.config = struct( ...
     'inputMode', inputMode, ...
@@ -176,9 +181,7 @@ results.config = struct( ...
     'showYawRateTimeFigure', showYawRateTimeFigure, ...
     'primaryZeroSolveMethod', primaryZeroSolveMethod, ...
     'fallbackZeroSolveMethod', fallbackZeroSolveMethod, ...
-    'aggregateFitDegree', aggregateFitDegree, ...
-    'pwmDiffFullScale', pwmDiffFullScale, ...
-    'equivalentDeltaAtFullScaleDeg', equivalentDeltaAtFullScaleDeg);
+    'aggregateFitDegree', aggregateFitDegree);
 
 %% ======================== 图 1：每次试验单独子图 ========================
 
@@ -216,8 +219,7 @@ if showAggregateFigure
     figures.aggregate = figure('Name', 'Aggregate PWM Diff vs Yaw Rate', 'Color', 'w');
     plotAggregateFigure( ...
         aggregateStats, aggregateFit, aggregateColor, fitLineColor, ...
-        aggregateMarkerSize, fitLineWidth, trimMarkerSize, referenceLineColor, ...
-        pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
+        aggregateMarkerSize, fitLineWidth, trimMarkerSize, referenceLineColor);
 end
 
 %% ======================== 图 4：直行补偿量汇总图 ========================
@@ -237,8 +239,10 @@ fprintf('  唯一 PWM 差值数量：%d\n', numel(aggregateStats.pwmDiff));
 
 if aggregateFit.available
     fprintf('  总体拟合：yawRate = %s\n', polynomialToString(aggregateFit.coeff, 'pwmDiff'));
-    fprintf('  总体拟合得到的直行 PWM 差值：%.6f\n', aggregateFit.zeroPwmDiff);
-    fprintf('  对应等效偏舵角：%.6f deg\n', aggregateFit.zeroEquivalentBiasDeg);
+    fprintf('  总体拟合得到的直行 PWM 全差值：%.6f\n', aggregateFit.zeroPwmDiff);
+    fprintf('  PWM半差值：%d\n', fix(aggregateFit.zeroPwmDiff / 2));
+    fprintf('  说明：PWM半差值舍弃小数部分，精确值为 %.6f。\n', ...
+        aggregateFit.zeroPwmDiff / 2);
 else
     fprintf('  总体拟合：未生成（唯一 PWM 差值点不足）。\n');
 end
@@ -424,7 +428,7 @@ function csvFiles = selectOneCsvFile(csvFiles, autoPickRule)
     csvFiles = csvFiles(idx);
 end
 
-function run = loadUTrimScanRun(filePath, primaryMethod, fallbackMethod, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg)
+function run = loadUTrimScanRun(filePath, primaryMethod, fallbackMethod)
 % 读取单个 u_trim_scan CSV，并提取 point_summary 扫描结果。
 
     tbl = safeReadTable(filePath);
@@ -477,8 +481,6 @@ function run = loadUTrimScanRun(filePath, primaryMethod, fallbackMethod, pwmDiff
 
     trim = estimateZeroCrossing(scanPwmDiff, scanYawRate, primaryMethod, fallbackMethod);
     trim.uValue = trim.pwmDiff / 2;
-    trim.equivalentBiasDeg = pwmDiffToEquivalentBiasDeg( ...
-        trim.pwmDiff, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
 
     finalMask = strcmpi(strtrim(rowType), 'final_result');
     finalMask = finalMask & isfinite(optimalUTrim);
@@ -505,8 +507,6 @@ function run = loadUTrimScanRun(filePath, primaryMethod, fallbackMethod, pwmDiff
     run.scanPwmDiff = scanPwmDiff(:);
     run.scanHalfDiffU = scanHalfDiffU(:);
     run.scanYawRateMeanDegPerSec = scanYawRate(:);
-    run.scanEquivalentBiasDeg = pwmDiffToEquivalentBiasDeg( ...
-        scanPwmDiff(:), pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
     run.sampleTimeSec = sampleTimeSec(:);
     run.sampleYawRateDegPerSec = sampleYawRateDegPerSec(:);
     run.samplePhase = samplePhase(:);
@@ -520,8 +520,6 @@ function run = loadUTrimScanRun(filePath, primaryMethod, fallbackMethod, pwmDiff
     run.trim = trim;
     run.recordedOptimalU = recordedOptimalU;
     run.recordedTrimPwmDiff = recordedTrimPwmDiff;
-    run.recordedEquivalentBiasDeg = pwmDiffToEquivalentBiasDeg( ...
-        recordedTrimPwmDiff, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
     run.recordedNote = recordedNote;
 end
 
@@ -655,7 +653,6 @@ function trim = initTrimStruct()
     trim.method = "";
     trim.pwmDiff = NaN;
     trim.uValue = NaN;
-    trim.equivalentBiasDeg = NaN;
     trim.residualYawRateDegPerSec = NaN;
     trim.bracketPwmDiff = [NaN, NaN];
     trim.bracketYawRate = [NaN, NaN];
@@ -805,12 +802,6 @@ function value = selectPolynomialZero(coeff, preferredRange, preferredCenter)
     value = candidates(idx);
 end
 
-function equivalentBiasDeg = pwmDiffToEquivalentBiasDeg(pwmDiff, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg)
-% 将 PWM 差值映射为等效偏舵角。
-
-    equivalentBiasDeg = pwmDiff(:) / pwmDiffFullScale * equivalentDeltaAtFullScaleDeg;
-end
-
 function summaryTable = buildSummaryTable(runs)
 % 将每次实验的结果整理为 MATLAB table。
 
@@ -823,11 +814,9 @@ function summaryTable = buildSummaryTable(runs)
     trimMethod = strings(runCount, 1);
     trimPwmDiff = nan(runCount, 1);
     trimU = nan(runCount, 1);
-    trimEquivalentBiasDeg = nan(runCount, 1);
     residualYawRateDegPerSec = nan(runCount, 1);
     recordedOptimalU = nan(runCount, 1);
     recordedTrimPwmDiff = nan(runCount, 1);
-    recordedEquivalentBiasDeg = nan(runCount, 1);
     deltaUVsRecorded = nan(runCount, 1);
     deltaPwmDiffVsRecorded = nan(runCount, 1);
     recordedNote = strings(runCount, 1);
@@ -840,11 +829,9 @@ function summaryTable = buildSummaryTable(runs)
         trimMethod(i) = string(runs(i).trim.method);
         trimPwmDiff(i) = runs(i).trim.pwmDiff;
         trimU(i) = runs(i).trim.uValue;
-        trimEquivalentBiasDeg(i) = runs(i).trim.equivalentBiasDeg;
         residualYawRateDegPerSec(i) = runs(i).trim.residualYawRateDegPerSec;
         recordedOptimalU(i) = runs(i).recordedOptimalU;
         recordedTrimPwmDiff(i) = runs(i).recordedTrimPwmDiff;
-        recordedEquivalentBiasDeg(i) = runs(i).recordedEquivalentBiasDeg;
         deltaUVsRecorded(i) = runs(i).trim.uValue - runs(i).recordedOptimalU;
         deltaPwmDiffVsRecorded(i) = runs(i).trim.pwmDiff - runs(i).recordedTrimPwmDiff;
         recordedNote(i) = string(runs(i).recordedNote);
@@ -852,13 +839,13 @@ function summaryTable = buildSummaryTable(runs)
 
     summaryTable = table( ...
         fileName, wallTimeStart, wallTimeEnd, scanPointCount, trimMethod, ...
-        trimPwmDiff, trimU, trimEquivalentBiasDeg, residualYawRateDegPerSec, ...
-        recordedOptimalU, recordedTrimPwmDiff, recordedEquivalentBiasDeg, ...
+        trimPwmDiff, trimU, residualYawRateDegPerSec, ...
+        recordedOptimalU, recordedTrimPwmDiff, ...
         deltaUVsRecorded, deltaPwmDiffVsRecorded, recordedNote, ...
         'VariableNames', { ...
         'FileName', 'WallTimeStart', 'WallTimeEnd', 'ScanPointCount', 'TrimMethod', ...
-        'TrimPwmDiff', 'TrimU', 'TrimEquivalentBiasDeg', 'ResidualYawRateDegPerSec', ...
-        'RecordedOptimalU', 'RecordedTrimPwmDiff', 'RecordedEquivalentBiasDeg', ...
+        'TrimPwmDiff', 'TrimU', 'ResidualYawRateDegPerSec', ...
+        'RecordedOptimalU', 'RecordedTrimPwmDiff', ...
         'DeltaUVsRecorded', 'DeltaPwmDiffVsRecorded', 'RecordedNote'});
 end
 
@@ -883,7 +870,7 @@ function aggregateStats = buildAggregateStats(allPwmDiff, allYawRate)
     aggregateStats.sampleCount = groupCount;
 end
 
-function fitResult = fitAggregateTrend(aggregateStats, fitDegree, trimPwmDiffValues, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg)
+function fitResult = fitAggregateTrend(aggregateStats, fitDegree, trimPwmDiffValues)
 % 对总体均值点做加权拟合，并给出零点估计。
 
     fitResult = struct();
@@ -892,7 +879,6 @@ function fitResult = fitAggregateTrend(aggregateStats, fitDegree, trimPwmDiffVal
     fitResult.xFit = [];
     fitResult.yFit = [];
     fitResult.zeroPwmDiff = NaN;
-    fitResult.zeroEquivalentBiasDeg = NaN;
 
     xData = aggregateStats.pwmDiff(:);
     yData = aggregateStats.meanYawRate(:);
@@ -912,18 +898,12 @@ function fitResult = fitAggregateTrend(aggregateStats, fitDegree, trimPwmDiffVal
     end
 
     zeroPwmDiff = selectPolynomialZero(coeff, [min(xData), max(xData)], preferredCenter);
-    zeroEquivalentBiasDeg = NaN;
-    if isfinite(zeroPwmDiff)
-        zeroEquivalentBiasDeg = pwmDiffToEquivalentBiasDeg( ...
-            zeroPwmDiff, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
-    end
 
     fitResult.available = true;
     fitResult.coeff = coeff;
     fitResult.xFit = xFit;
     fitResult.yFit = yFit;
     fitResult.zeroPwmDiff = zeroPwmDiff;
-    fitResult.zeroEquivalentBiasDeg = zeroEquivalentBiasDeg;
 end
 
 function stdValue = safeStd(values)
@@ -1208,8 +1188,7 @@ function plotOverlayFigure(runs, lineWidth, markerSize, trimMarkerSize, referenc
 end
 
 function plotAggregateFigure(aggregateStats, aggregateFit, aggregateColor, fitLineColor, ...
-    aggregateMarkerSize, fitLineWidth, trimMarkerSize, referenceLineColor, ...
-    pwmDiffFullScale, equivalentDeltaAtFullScaleDeg)
+    aggregateMarkerSize, fitLineWidth, trimMarkerSize, referenceLineColor)
 % 绘制总体均值点与拟合曲线。
 
     hold on;
@@ -1246,11 +1225,8 @@ function plotAggregateFigure(aggregateStats, aggregateFit, aggregateColor, fitLi
     ylabel('Mean Yaw Rate (deg/s)');
 
     if aggregateFit.available && isfinite(aggregateFit.zeroPwmDiff)
-        equivalentBiasDeg = pwmDiffToEquivalentBiasDeg( ...
-            aggregateFit.zeroPwmDiff, pwmDiffFullScale, equivalentDeltaAtFullScaleDeg);
-        title(sprintf(['总体趋势：直行补偿 PWM diff = %.3f, ', ...
-            '等效偏舵角 = %.4f deg'], ...
-            aggregateFit.zeroPwmDiff, equivalentBiasDeg));
+        title(sprintf('总体趋势：直行补偿 PWM diff = %.3f', ...
+            aggregateFit.zeroPwmDiff));
     else
         title('总体趋势：PWM 差值与平均角速度');
     end
@@ -1265,20 +1241,11 @@ function plotSummaryFigure(summaryTable, summaryColor)
     runCount = height(summaryTable);
     x = 1:runCount;
 
-    yyaxis left;
     bar(x, summaryTable.TrimPwmDiff, 0.72, ...
         'FaceColor', summaryColor, ...
         'EdgeColor', summaryColor, ...
         'DisplayName', '直行补偿 PWM diff');
     ylabel('Trim PWM diff');
-
-    yyaxis right;
-    plot(x, summaryTable.TrimEquivalentBiasDeg, '-o', ...
-        'Color', [0.82, 0.10, 0.10], ...
-        'MarkerFaceColor', [0.82, 0.10, 0.10], ...
-        'LineWidth', 1.3, ...
-        'DisplayName', '等效偏舵角');
-    ylabel('Equivalent Bias Rudder Angle (deg)');
 
     applyThesisAxesStyle();
     xticks(x);
