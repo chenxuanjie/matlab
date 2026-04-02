@@ -4,6 +4,7 @@ function results = identify_nomoto_stages(experimentRoot, opts)
 % 运行模式：
 % 'identify' -> 完整辨识（stage1 ~ stage4）
 % 'validate' -> 只做 stage4 验证
+% 'compare_validate' -> 单/双模型对比验证，只做 stage4，并额外叠加单模型 KT 曲线
 runMode = 'identify';
 %
 % 是否启用角速度滤波：
@@ -52,6 +53,13 @@ validateKNeg = 0.00705955;
 validateT = 0.465642;
 validateAlpha =  0.225721;
 %
+% 单/双模型对比验证参数（仅 runMode = 'compare_validate' 时生效）：
+% 1. 双模型参数优先读取最新辨识缓存，也可通过 opts.KPos/KNeg/T/alpha 显式覆盖
+% 2. 单模型默认按线性 KT 对比，因此 alpha 默认取 0
+compareSingleK = NaN;
+compareSingleT = NaN;
+compareSingleAlpha = 0;
+%
 % 说明：
 % 1. 默认数据目录：优先读取 Nomoto/experiment_tests
 %    如果找不到完整阶段数据，会打印提示后回退到 origin_experiment_test
@@ -95,12 +103,22 @@ if nargin < 2 || isempty(opts)
     if isfinite(validateAlpha)
         opts.alpha = validateAlpha;
     end
+    if isfinite(compareSingleK)
+        opts.SingleK = compareSingleK;
+    end
+    if isfinite(compareSingleT)
+        opts.SingleT = compareSingleT;
+    end
+    if isfinite(compareSingleAlpha)
+        opts.SingleAlpha = compareSingleAlpha;
+    end
 end
 
 scriptDir = fileparts(mfilename('fullpath'));
 cfg = buildConfig(scriptDir, experimentRoot, opts);
 ensureFolder(cfg.OutputRoot);
 ensureFolder(cfg.RunOutputRoot);
+fprintf('===== 非线性 Nomoto 辨识试验与验证 =====\n');
 
 [catalog, resolvedSearchRoot] = discoverStageCsvFiles(cfg);
 if ~isempty(resolvedSearchRoot)
@@ -122,10 +140,15 @@ for i = 1:numel(selectedFiles)
     fprintf('  阶段 %d -> %s\n', selectedFiles(i).stageId, selectedFiles(i).filePath);
 end
 
+compareParams = struct([]);
 if isValidationMode(cfg)
     params = initializeValidationParams(cfg);
+elseif isCompareValidationMode(cfg)
+    cached = loadLatestCache(cfg.CacheFile, cfg.DefaultCacheFile);
+    params = initializeParams(cfg, cached);
+    compareParams = initializeCompareSingleParams(cfg);
 else
-    cached = loadLatestCache(cfg.CacheFile);
+    cached = loadLatestCache(cfg.CacheFile, cfg.DefaultCacheFile);
     params = initializeParams(cfg, cached);
 end
 
@@ -137,6 +160,9 @@ results.output_root = cfg.RunOutputRoot;
 results.selected_files = struct([]);
 results.stage_results = struct();
 results.initial_params = paramsToStruct(params);
+if isCompareValidationMode(cfg)
+    results.compare_single_params = compareParamsToStruct(compareParams);
+end
 
 stageOrder = unique(sort([selectedFiles.stageId]));
 writeIdx = 0;
@@ -162,14 +188,23 @@ for i = 1:numel(stageOrder)
     ensureFolder(stageFolder);
 
     hasPairedStage1 = stageId == 1 && isfield(selected, 'pairedFilePath') && ~isempty(selected.pairedFilePath);
-    overviewFiles = plotCommonFigures(data, stageFolder, cfg, hasPairedStage1);
+    if isCompareValidationMode(cfg)
+        overviewFiles = struct();
+    else
+        overviewFiles = plotCommonFigures(data, stageFolder, cfg, hasPairedStage1);
+    end
 
     switch stageId
         case 1
             if isfield(selected, 'pairedFilePath') && ~isempty(selected.pairedFilePath)
                 pairedData = readStageData(selected.pairedFilePath, cfg);
                 stageResult = identifyStage1KDual(data, pairedData, stageFolder, cfg);
-                overviewFiles.gps = plotStage1DualGps(data, pairedData, stageFolder, cfg);
+                gpsFigures = plotStage1DualGps(data, pairedData, stageFolder, cfg);
+                overviewFiles.gps = gpsFigures.combined;
+                overviewFiles.gps_pos = gpsFigures.positive_scatter;
+                overviewFiles.gps_neg = gpsFigures.negative_scatter;
+                overviewFiles.gps_circle_pos = gpsFigures.positive_circle;
+                overviewFiles.gps_circle_neg = gpsFigures.negative_circle;
                 stageResult.file_paths = {selected.filePath, selected.pairedFilePath};
                 stageResult.stage_name = 'steady_turn_dual';
             else
@@ -188,7 +223,11 @@ for i = 1:numel(stageOrder)
         case 3
             [stageResult, params] = identifyStage3Alpha(data, params, stageFolder, cfg);
         case 4
-            stageResult = validateStage4(data, params, stageFolder, cfg);
+            if isCompareValidationMode(cfg)
+                stageResult = validateStage4Compare(data, params, compareParams, stageFolder, cfg);
+            else
+                stageResult = validateStage4(data, params, stageFolder, cfg);
+            end
         otherwise
             error('暂不支持的 stage_id：%d', stageId);
     end
@@ -210,22 +249,52 @@ if isIdentifyMode(cfg)
     save(cfg.CacheFile, 'results');
 end
 
-fprintf('\n辨识结果汇总：\n');
-fprintf('  K+    = %.12g\n', results.final_params.K_pos);
-fprintf('  K-    = %.12g\n', results.final_params.K_neg);
-fprintf('  K_eq  = %.12g\n', results.final_params.K);
-fprintf('  T     = %.12g\n', results.final_params.T);
-fprintf('  alpha = %.12g\n', results.final_params.alpha);
-fprintf('  u_trim = %.12g\n', results.final_params.u_trim);
-if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
-        && isfinite(results.stage_results.stage1.turning_radius_m)
-    fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
-        results.stage_results.stage1.turning_radius_m, results.stage_results.stage1.turning_diameter_m);
-    if isfield(results.stage_results.stage1, 'turning_radius_pos_m') && isfinite(results.stage_results.stage1.turning_radius_pos_m)
-        fprintf('  stage1 正向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_pos_m);
+if isCompareValidationMode(cfg)
+    fprintf('\n单/双模型对比验证结果：\n');
+    fprintf('  双模型 K+   = %.12g\n', results.final_params.K_pos);
+    fprintf('  双模型 K-   = %.12g\n', results.final_params.K_neg);
+    fprintf('  双模型 K_eq = %.12g\n', results.final_params.K);
+    fprintf('  双模型 T    = %.12g\n', results.final_params.T);
+    fprintf('  双模型 alpha = %.12g\n', results.final_params.alpha);
+    fprintf('  单模型 K    = %.12g\n', results.compare_single_params.K);
+    fprintf('  单模型 T    = %.12g\n', results.compare_single_params.T);
+    fprintf('  单模型 alpha = %.12g\n', results.compare_single_params.alpha);
+    if isfield(results.stage_results, 'stage4')
+        stage4 = results.stage_results.stage4;
+        fprintf('  双模型航向角 RMSE = %.4f deg\n', stage4.dual_model.heading_rmse_deg);
+        fprintf('  单模型航向角 RMSE = %.4f deg\n', stage4.single_model.heading_rmse_deg);
+        fprintf('  双模型辨识误差：[%.4f,%.4f] deg\n', ...
+            stage4.dual_model.heading_error_min_deg, stage4.dual_model.heading_error_max_deg);
+        fprintf('  单模型辨识误差：[%.4f,%.4f] deg\n', ...
+            stage4.single_model.heading_error_min_deg, stage4.single_model.heading_error_max_deg);
     end
-    if isfield(results.stage_results.stage1, 'turning_radius_neg_m') && isfinite(results.stage_results.stage1.turning_radius_neg_m)
-        fprintf('  stage1 反向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_neg_m);
+else
+    fprintf('\n辨识结果汇总：\n');
+    fprintf('  K+    = %.12g\n', results.final_params.K_pos);
+    fprintf('  K-    = %.12g\n', results.final_params.K_neg);
+    fprintf('  K_eq  = %.12g\n', results.final_params.K);
+    fprintf('  T     = %.12g\n', results.final_params.T);
+    fprintf('  alpha = %.12g\n', results.final_params.alpha);
+    fprintf('  u_trim = %.12g\n', results.final_params.u_trim);
+    if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
+            && isfinite(results.stage_results.stage1.turning_radius_m)
+        fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
+            results.stage_results.stage1.turning_radius_m, results.stage_results.stage1.turning_diameter_m);
+        if isfield(results.stage_results.stage1, 'turning_radius_pos_m') && isfinite(results.stage_results.stage1.turning_radius_pos_m)
+            fprintf('  stage1 正向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_pos_m);
+        end
+        if isfield(results.stage_results.stage1, 'turning_radius_neg_m') && isfinite(results.stage_results.stage1.turning_radius_neg_m)
+            fprintf('  stage1 反向回转半径 ≈ %.3f m\n', results.stage_results.stage1.turning_radius_neg_m);
+        end
+    end
+    if isfield(results.stage_results, 'stage4') ...
+            && isfield(results.stage_results.stage4, 'heading_error_min_deg') ...
+            && isfield(results.stage_results.stage4, 'heading_error_max_deg') ...
+            && isfinite(results.stage_results.stage4.heading_error_min_deg) ...
+            && isfinite(results.stage_results.stage4.heading_error_max_deg)
+        fprintf('  辨识误差：[%.4f,%.4f] deg\n', ...
+            results.stage_results.stage4.heading_error_min_deg, ...
+            results.stage_results.stage4.heading_error_max_deg);
     end
 end
 fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
@@ -253,8 +322,10 @@ cfg.OutputRoot = char(string(cfg.OutputRoot));
 cfg.RunStamp = char(datetime('now', 'Format', 'yyyyMMdd_HHmmss'));
 cfg.RunOutputRoot = fullfile(cfg.OutputRoot, ['run_' cfg.RunStamp]);
 cfg.CacheFile = fullfile(cfg.OutputRoot, 'nomoto_latest_results.mat');
+cfg.DefaultCacheFile = fullfile(scriptDir, 'results', 'nomoto_latest_results.mat');
 
-% 常改 1：运行模式。'identify' 为完整辨识，'validate' 为只做 stage4 验证。
+% 常改 1：运行模式。'identify' 为完整辨识，'validate' 为只做 stage4 验证，
+% 'compare_validate' 为单/双模型对比验证。
 cfg.Mode = parseRunMode(getOption(opts, 'Mode', 'identify'));
 
 % 常改 2：是否显示图窗。
@@ -288,6 +359,9 @@ cfg.OverrideKPos = getNumericOptionAliases(opts, {'KPos', 'K_pos', 'KPlus', 'K_p
 cfg.OverrideKNeg = getNumericOptionAliases(opts, {'KNeg', 'K_neg', 'KMinus', 'K_minus'}, NaN);
 cfg.OverrideT = getNumericOption(opts, 'T', NaN);
 cfg.OverrideAlpha = getNumericOption(opts, 'alpha', NaN);
+cfg.CompareSingleK = getNumericOptionAliases(opts, {'SingleK', 'SingleModelK', 'CompareSingleK'}, NaN);
+cfg.CompareSingleT = getNumericOptionAliases(opts, {'SingleT', 'SingleModelT', 'CompareSingleT'}, NaN);
+cfg.CompareSingleAlpha = getNumericOptionAliases(opts, {'SingleAlpha', 'SingleModelAlpha', 'CompareSingleAlpha'}, 0.0);
 end
 
 function [catalog, resolvedSearchRoot] = discoverStageCsvFiles(cfg)
@@ -360,7 +434,11 @@ function meta = inspectStageCsv(filePath, dirEntry)
 meta = struct([]);
 
 try
-    tbl = readtable(filePath, 'TextType', 'string');
+    tbl = readStageTable(filePath, { ...
+        {'elapsed_time_s', 'elapsed_time', 'time_s', 'time', 'timestamp'}, ...
+        {'yaw_rate_deg_s', 'yaw_rate_degps', 'yaw_rate', 'r'}, ...
+        {'left_pwm'}, ...
+        {'right_pwm'}});
 catch
     return;
 end
@@ -481,7 +559,7 @@ end
 end
 
 function stageIds = getRequestedStageIds(cfg)
-if isValidationMode(cfg)
+if isValidationMode(cfg) || isCompareValidationMode(cfg)
     stageIds = 4;
 else
     stageIds = 1:4;
@@ -496,8 +574,16 @@ function tf = isValidationMode(cfg)
 tf = strcmp(cfg.Mode, 'validate');
 end
 
+function tf = isCompareValidationMode(cfg)
+tf = strcmp(cfg.Mode, 'compare_validate');
+end
+
 function data = readStageData(filePath, cfg)
-tbl = readtable(filePath, 'TextType', 'string');
+tbl = readStageTable(filePath, { ...
+    {'elapsed_time_s', 'elapsed_time', 'time_s', 'time', 'timestamp'}, ...
+    {'yaw_rate_deg_s', 'yaw_rate_degps', 'yaw_rate', 'r'}, ...
+    {'left_pwm'}, ...
+    {'right_pwm'}});
 names = normalizeNames(tbl.Properties.VariableNames);
 
 timeS = numericColumn(tbl, names, {'elapsed_time_s', 'elapsed_time', 'time_s', 'time'}, true);
@@ -641,6 +727,80 @@ data.latitude = optionalColumn(latitude, numel(timeS));
 data.analysisMask = columnVector(analysisMask);
 data.dtMedian = median(diff(timeS));
 data.sampleCount = numel(timeS);
+end
+
+function tbl = readStageTable(filePath, requiredColumnGroups)
+if nargin < 2
+    requiredColumnGroups = {};
+end
+
+[tblDefault, defaultErr] = tryReadStageTable(filePath, '');
+defaultOk = isempty(defaultErr) && hasRequiredColumnGroups(tblDefault, requiredColumnGroups);
+if defaultOk
+    tbl = tblDefault;
+    return;
+end
+
+[tblUtf8, utf8Err] = tryReadStageTable(filePath, 'UTF-8');
+utf8Ok = isempty(utf8Err) && hasRequiredColumnGroups(tblUtf8, requiredColumnGroups);
+if utf8Ok
+    fprintf('检测到默认读取异常，改用 UTF-8 重读：%s\n', filePath);
+    tbl = tblUtf8;
+    return;
+end
+
+if isempty(defaultErr)
+    tbl = tblDefault;
+    return;
+end
+
+if isempty(utf8Err)
+    tbl = tblUtf8;
+    return;
+end
+
+error('读取数据文件失败：%s\n默认读取失败：%s\nUTF-8 重读失败：%s', ...
+    filePath, defaultErr.message, utf8Err.message);
+end
+
+function [tbl, readErr] = tryReadStageTable(filePath, encodingName)
+tbl = table();
+readErr = [];
+
+try
+    if strlength(string(encodingName)) == 0
+        tbl = readtable(filePath, 'TextType', 'string');
+    else
+        tbl = readtable(filePath, 'TextType', 'string', 'Encoding', char(string(encodingName)));
+    end
+catch err
+    readErr = err;
+end
+end
+
+function tf = hasRequiredColumnGroups(tbl, requiredColumnGroups)
+if isempty(requiredColumnGroups)
+    tf = true;
+    return;
+end
+
+if ~istable(tbl) || width(tbl) == 0
+    tf = false;
+    return;
+end
+
+names = normalizeNames(tbl.Properties.VariableNames);
+tf = true;
+for i = 1:numel(requiredColumnGroups)
+    candidateNames = requiredColumnGroups{i};
+    if ischar(candidateNames) || isstring(candidateNames)
+        candidateNames = cellstr(string(candidateNames));
+    end
+    if ~any(ismember(names, normalizeNames(candidateNames)))
+        tf = false;
+        return;
+    end
+end
 end
 
 function overviewFiles = plotCommonFigures(data, stageFolder, cfg, skipGps)
@@ -876,62 +1036,34 @@ stageResult.residual_removed_count_pos = tailPos.residualRemovedCount;
 stageResult.residual_removed_count_neg = tailNeg.residualRemovedCount;
 
 fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-双定常回转 K 辨识');
-tiledlayout(fig, 2, 2, 'Padding', 'compact', 'TileSpacing', 'compact');
+tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
 
 nexttile;
 hMeasured = plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
 hold on;
 hFiltered = plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
-hSelected = scatter(dataPos.timeS(tailPos.selectedIdx), rad2deg(dataPos.yawRateRadSFiltered(tailPos.selectedIdx)), ...
-    26, style.headingColor, 'filled', 'DisplayName', '筛选样本');
 hStart = xline(tailPos.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
 hCenter = yline(rad2deg(tailPos.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
 title(sprintf('正向稳态范围筛选，K+ = %.6g', KPos));
-legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
-    {'实测值', '处理值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
+legend([hMeasured, hFiltered, hStart, hCenter], ...
+    {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
 nexttile;
 hMeasured = plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
 hold on;
 hFiltered = plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
-hSelected = scatter(dataNeg.timeS(tailNeg.selectedIdx), rad2deg(dataNeg.yawRateRadSFiltered(tailNeg.selectedIdx)), ...
-    26, style.pointColor, 'filled', 'DisplayName', '筛选样本');
 hStart = xline(tailNeg.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
 hCenter = yline(rad2deg(tailNeg.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
 title(sprintf('反向稳态范围筛选，K- = %.6g', KNeg));
-legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
-    {'实测值', '处理值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
-hold off;
-
-nexttile;
-hRepPos = scatter(tailPos.uSel, rad2deg(tailPos.rSel), 24, style.headingColor, 'filled');
-hold on;
-xFitPos = buildFitAxis(tailPos.uSel);
-hFitPos = plot(xFitPos, rad2deg(KPos * xFitPos), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
-applyAxesStyle(style);
-xlabel('修正后半 PWM 差值');
-ylabel('角速度 (deg/s)');
-title('正向稳态样本拟合');
-legend([hRepPos, hFitPos], {'筛选样本', 'r = K+ (u-u_{trim})'}, 'Location', 'best');
-hold off;
-
-nexttile;
-hRepNeg = scatter(tailNeg.uSel, rad2deg(tailNeg.rSel), 24, style.pointColor, 'filled');
-hold on;
-xFitNeg = buildFitAxis(tailNeg.uSel);
-hFitNeg = plot(xFitNeg, rad2deg(KNeg * xFitNeg), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
-applyAxesStyle(style);
-xlabel('修正后半 PWM 差值');
-ylabel('角速度 (deg/s)');
-title('反向稳态样本拟合');
-legend([hRepNeg, hFitNeg], {'筛选样本', 'r = K- (u-u_{trim})'}, 'Location', 'best');
+legend([hMeasured, hFiltered, hStart, hCenter], ...
+    {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
 stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
@@ -939,7 +1071,12 @@ end
 
 function gpsFigure = plotStage1DualGps(dataA, dataB, stageFolder, cfg)
 style = plotStyle();
-gpsFigure = struct('eps', '', 'fig', '');
+gpsFigure = struct( ...
+    'combined', struct('eps', '', 'fig', ''), ...
+    'positive_scatter', struct('eps', '', 'fig', ''), ...
+    'negative_scatter', struct('eps', '', 'fig', ''), ...
+    'positive_circle', struct('eps', '', 'fig', ''), ...
+    'negative_circle', struct('eps', '', 'fig', ''));
 
 hasGpsA = all(isfinite(dataA.longitude)) && all(isfinite(dataA.latitude));
 hasGpsB = all(isfinite(dataB.longitude)) && all(isfinite(dataB.latitude));
@@ -972,7 +1109,144 @@ ylabel(c, '时间 (s)');
 legend('Location', 'best');
 hold off;
 
-gpsFigure = saveFigureBundle(figMap, fullfile(stageFolder, sprintf('stage%d_gps', dataA.stageId)), cfg);
+gpsFigure.combined = saveFigureBundle(figMap, fullfile(stageFolder, sprintf('stage%d_gps', dataA.stageId)), cfg);
+gpsFigure.positive_scatter = plotSingleGpsScatterFigure( ...
+    dataA, stageFolder, cfg, '正向', 'o', sprintf('stage%d_gps_pos', dataA.stageId));
+gpsFigure.negative_scatter = plotSingleGpsScatterFigure( ...
+    dataB, stageFolder, cfg, '反向', 'd', sprintf('stage%d_gps_neg', dataB.stageId));
+gpsFigure.positive_circle = plotSingleTurningCircleFigure( ...
+    dataA, lon0, lat0, stageFolder, cfg, '正向', style.headingColor, ...
+    sprintf('stage%d_gps_pos_circle', dataA.stageId));
+gpsFigure.negative_circle = plotSingleTurningCircleFigure( ...
+    dataB, lon0, lat0, stageFolder, cfg, '反向', style.pointColor, ...
+    sprintf('stage%d_gps_neg_circle', dataB.stageId));
+end
+
+function figureBundle = plotSingleGpsScatterFigure(data, stageFolder, cfg, branchLabel, markerSpec, fileTag)
+style = plotStyle();
+figureBundle = struct('eps', '', 'fig', '');
+
+validMask = isfinite(data.longitude) & isfinite(data.latitude) & isfinite(data.timeS);
+if nnz(validMask) < 2
+    return;
+end
+
+lon = data.longitude(validMask);
+lat = data.latitude(validMask);
+timeS = data.timeS(validMask);
+
+figMap = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
+    'Name', sprintf('阶段%d %s定常回转轨迹散点图', data.stageId, branchLabel));
+hold on;
+scatter(lon, lat, 20, timeS, 'filled', 'Marker', markerSpec, 'DisplayName', [branchLabel '轨迹']);
+scatter(lon(1), lat(1), 62, 'g', 'filled', 'Marker', 's', 'DisplayName', '起点');
+scatter(lon(end), lat(end), 62, 'r', 'filled', 'Marker', 's', 'DisplayName', '终点');
+applyAxesStyle(style);
+axis equal;
+xlabel('经度 (°E)');
+ylabel('纬度 (°N)');
+title(sprintf('阶段%d %s定常回转轨迹散点图', data.stageId, branchLabel));
+c = colorbar;
+ylabel(c, '时间 (s)');
+legend('Location', 'best');
+hold off;
+
+figureBundle = saveFigureBundle(figMap, fullfile(stageFolder, fileTag), cfg);
+end
+
+function figureBundle = plotSingleTurningCircleFigure(data, lon0, lat0, stageFolder, cfg, branchLabel, colorSpec, fileTag)
+style = plotStyle();
+figureBundle = struct('eps', '', 'fig', '');
+
+[xLocalM, yLocalM] = lonLatToLocalMeters(data.longitude, data.latitude, lon0, lat0);
+validMask = isfinite(xLocalM) & isfinite(yLocalM);
+xLocalM = xLocalM(validMask);
+yLocalM = yLocalM(validMask);
+
+if numel(xLocalM) < 3
+    return;
+end
+
+tailIdx = buildCircleFitIndices(numel(xLocalM), cfg.Stage1TailFraction, cfg.Stage1TailMinSamples);
+[centerX, centerY, radiusM, rmseM, isValid] = fitCircleLeastSquares(xLocalM(tailIdx), yLocalM(tailIdx));
+
+figCircle = figure('Visible', figureVisibility(cfg), 'Color', 'w', ...
+    'Name', sprintf('阶段%d %s回转圆拟合', data.stageId, branchLabel));
+hold on;
+plot(xLocalM, yLocalM, '-', 'Color', colorSpec, 'LineWidth', 1.0, 'DisplayName', [branchLabel '轨迹']);
+scatter(xLocalM(tailIdx), yLocalM(tailIdx), 20, colorSpec, 'filled', ...
+    'DisplayName', [branchLabel '尾段拟合点']);
+scatter(xLocalM(1), yLocalM(1), 54, 'g', 'filled', 'DisplayName', '起点');
+scatter(xLocalM(end), yLocalM(end), 54, 'r', 'filled', 'DisplayName', '终点');
+
+if isValid
+    theta = linspace(0, 2 * pi, 361);
+    plot(centerX + radiusM * cos(theta), centerY + radiusM * sin(theta), '--', ...
+        'Color', style.fitColor, 'LineWidth', 1.3, 'DisplayName', '拟合圆');
+    scatter(centerX, centerY, 46, style.referenceColor, 'filled', 'DisplayName', '圆心');
+end
+
+applyAxesStyle(style);
+axis equal;
+xlabel('局部 X (m)');
+ylabel('局部 Y (m)');
+if isValid
+    title(sprintf('阶段%d %s回转圆拟合，R = %.3f m，RMSE = %.3f m', ...
+        data.stageId, branchLabel, radiusM, rmseM));
+else
+    title(sprintf('阶段%d %s回转圆拟合（圆拟合失败）', data.stageId, branchLabel));
+end
+legend('Location', 'best');
+hold off;
+
+figureBundle = saveFigureBundle(figCircle, fullfile(stageFolder, fileTag), cfg);
+end
+
+function [xLocalM, yLocalM] = lonLatToLocalMeters(longitude, latitude, lon0, lat0)
+earthRadiusM = 6371000;
+xLocalM = earthRadiusM * deg2rad(longitude - lon0) * cosd(lat0);
+yLocalM = earthRadiusM * deg2rad(latitude - lat0);
+end
+
+function fitIdx = buildCircleFitIndices(sampleCount, tailFraction, minSamples)
+tailCount = max(minSamples, ceil(sampleCount * tailFraction));
+tailCount = min(tailCount, sampleCount);
+fitIdx = (sampleCount - tailCount + 1:sampleCount).';
+end
+
+function [centerX, centerY, radiusM, rmseM, isValid] = fitCircleLeastSquares(x, y)
+centerX = NaN;
+centerY = NaN;
+radiusM = NaN;
+rmseM = NaN;
+isValid = false;
+
+x = columnVector(x);
+y = columnVector(y);
+if numel(x) < 3 || numel(y) < 3
+    return;
+end
+
+A = [2 * x, 2 * y, ones(size(x))];
+b = x .^ 2 + y .^ 2;
+if rank(A) < 3
+    return;
+end
+
+coeff = A \ b;
+centerX = coeff(1);
+centerY = coeff(2);
+radiusSquared = coeff(3) + centerX ^ 2 + centerY ^ 2;
+if ~(isfinite(radiusSquared) && radiusSquared > 0)
+    centerX = NaN;
+    centerY = NaN;
+    return;
+end
+
+radiusM = sqrt(radiusSquared);
+radialError = hypot(x - centerX, y - centerY) - radiusM;
+rmseM = sqrt(mean(radialError .^ 2, 'omitnan'));
+isValid = isfinite(centerX) && isfinite(centerY) && isfinite(radiusM);
 end
 
 function [K, tailInfo] = estimateStage1Branch(data, cfg, signMode)
@@ -1339,6 +1613,7 @@ gainSpec = branchGainSpec(params);
 rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, gainSpec, params.T, params.alpha, r0);
 headingNonlinearDeg = cumtrapz(data.timeS, rad2deg(rNonlinear));
 headingErrorDeg = data.headingRelDeg - headingNonlinearDeg;
+validHeadingErrorDeg = headingErrorDeg(isfinite(headingErrorDeg));
 
 stageResult = struct();
 stageResult.method = 'model_validation';
@@ -1353,12 +1628,20 @@ stageResult.yaw_rate_r2 = nomoto_utils.rsquared(data.yawRateRadSFiltered, rNonli
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_error_max_abs_deg = max(abs(headingErrorDeg));
+if isempty(validHeadingErrorDeg)
+    stageResult.heading_error_min_deg = NaN;
+    stageResult.heading_error_max_deg = NaN;
+else
+    stageResult.heading_error_min_deg = min(validHeadingErrorDeg);
+    stageResult.heading_error_max_deg = max(validHeadingErrorDeg);
+end
 
 figYawRate = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4角速度验证');
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.measuredColor, 'LineWidth', 1.1);
 hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
+expandYAxis([rad2deg(data.yawRateRadSFiltered); rad2deg(rNonlinear)], 0.18);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
 title('阶段4 角速度验证');
@@ -1370,6 +1653,7 @@ plot(data.timeS, data.headingRelDeg, '-', 'Color', style.measuredColor, 'LineWid
 hold on;
 plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
+expandYAxis([data.headingRelDeg; headingNonlinearDeg], 0.18);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
 title('阶段4 航向角验证');
@@ -1396,6 +1680,90 @@ hold off;
 stageResult.heading_error_figure = saveFigureBundle(figErr, fullfile(stageFolder, 'stage4_heading_error'), cfg);
 end
 
+function stageResult = validateStage4Compare(data, dualParams, singleParams, stageFolder, cfg)
+style = plotStyle();
+if ~(isfinite(dualParams.KPos) && isfinite(dualParams.KNeg) && isfinite(dualParams.T) && isfinite(dualParams.alpha))
+    error('单/双模型对比验证模式要求双模型参数 K+、K-、T、alpha 可用。');
+end
+if ~(isfinite(singleParams.K) && isfinite(singleParams.T) && isfinite(singleParams.alpha))
+    error('单/双模型对比验证模式要求显式提供单模型 K、T（alpha 可省略，默认 0）。');
+end
+
+u = data.uModelPwm;
+r0 = data.yawRateRadSFiltered(1);
+
+dualGainSpec = branchGainSpec(dualParams);
+rDual = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, dualGainSpec, dualParams.T, dualParams.alpha, r0);
+headingDualDeg = cumtrapz(data.timeS, rad2deg(rDual));
+headingErrorDualDeg = data.headingRelDeg - headingDualDeg;
+
+rSingle = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, singleParams.K, singleParams.T, singleParams.alpha, r0);
+headingSingleDeg = cumtrapz(data.timeS, rad2deg(rSingle));
+headingErrorSingleDeg = data.headingRelDeg - headingSingleDeg;
+
+dualValidErr = headingErrorDualDeg(isfinite(headingErrorDualDeg));
+singleValidErr = headingErrorSingleDeg(isfinite(headingErrorSingleDeg));
+
+stageResult = struct();
+stageResult.method = 'single_dual_compare_validation';
+stageResult.K_pos = dualParams.KPos;
+stageResult.K_neg = dualParams.KNeg;
+stageResult.K = equivalentBranchK(dualParams.KPos, dualParams.KNeg);
+stageResult.T = dualParams.T;
+stageResult.alpha = dualParams.alpha;
+stageResult.asymmetry_ratio = safeBranchRatio(dualParams.KNeg, dualParams.KPos);
+stageResult.single_model = buildSingleModelCompareStats(singleParams, data, rSingle, headingSingleDeg, singleValidErr);
+stageResult.dual_model = buildDualModelCompareStats(dualParams, data, rDual, headingDualDeg, dualValidErr);
+
+figYawRate = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4角速度验证');
+plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.measuredColor, 'LineWidth', 1.1);
+hold on;
+plot(data.timeS, rad2deg(rDual), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
+plot(data.timeS, rad2deg(rSingle), '--', 'Color', style.headingColor, 'LineWidth', 1.25);
+applyAxesStyle(style);
+expandYAxis([rad2deg(data.yawRateRadSFiltered); rad2deg(rDual); rad2deg(rSingle)], 0.18);
+xlabel('时间 (s)');
+ylabel('角速度 (deg/s)');
+title('阶段4 角速度验证（单/双模型对比）');
+legend({'滤波值', '双模型', '单模型(KT)'}, 'Location', 'best');
+hold off;
+
+figHeading = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4航向角验证');
+plot(data.timeS, data.headingRelDeg, '-', 'Color', style.measuredColor, 'LineWidth', 1.0);
+hold on;
+plot(data.timeS, headingDualDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
+plot(data.timeS, headingSingleDeg, '--', 'Color', style.headingColor, 'LineWidth', 1.25);
+applyAxesStyle(style);
+expandYAxis([data.headingRelDeg; headingDualDeg; headingSingleDeg], 0.18);
+xlabel('时间 (s)');
+ylabel('航向角 (deg)');
+title('阶段4 航向角验证（单/双模型对比）');
+legend({'滤波值', '双模型', '单模型(KT)'}, 'Location', 'best');
+hold off;
+
+figErr = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4航向角误差');
+plot(data.timeS, headingErrorDualDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
+hold on;
+plot(data.timeS, headingErrorSingleDeg, '--', 'Color', style.headingColor, 'LineWidth', 1.25);
+yline(0, '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
+applyAxesStyle(style);
+expandYAxis([headingErrorDualDeg; headingErrorSingleDeg; 0], 0.18);
+xlabel('时间 (s)');
+ylabel('航向角误差 (deg)');
+title(sprintf('阶段4 航向角误差，双模型 RMSE = %.3f deg，单模型 RMSE = %.3f deg', ...
+    stageResult.dual_model.heading_rmse_deg, stageResult.single_model.heading_rmse_deg));
+legend({'双模型误差', '单模型误差', '零误差参考线'}, 'Location', 'best');
+hold off;
+
+stageResult.yaw_rate_figure = saveFigureBundle(figYawRate, fullfile(stageFolder, 'stage4_yaw_rate_validation'), cfg);
+stageResult.heading_figure = saveFigureBundle(figHeading, fullfile(stageFolder, 'stage4_heading_validation'), cfg);
+stageResult.heading_error_figure = saveFigureBundle(figErr, fullfile(stageFolder, 'stage4_heading_error'), cfg);
+stageResult.figure = struct( ...
+    'yaw_rate', stageResult.yaw_rate_figure, ...
+    'heading', stageResult.heading_figure, ...
+    'heading_error', stageResult.heading_error_figure);
+end
+
 function saved = saveSummaryArtifacts(results, cfg)
 saved = struct();
 
@@ -1412,15 +1780,39 @@ summaryLines = {
     sprintf('生成时间：%s', results.generated_at)
     sprintf('搜索目录：%s', results.search_root)
     sprintf('输出目录：%s', results.output_root)
-    sprintf('K+ 参数：%.12g', results.final_params.K_pos)
-    sprintf('K- 参数：%.12g', results.final_params.K_neg)
-    sprintf('K 参数：%.12g', results.final_params.K)
-    sprintf('T 参数：%.12g', results.final_params.T)
-    sprintf('alpha 参数：%.12g', results.final_params.alpha)
-    sprintf('u_trim 参数：%.12g', results.final_params.u_trim)
-    ''
-    '本次选中的文件：'
     };
+
+if strcmp(results.run_mode, 'compare_validate')
+    summaryLines{end + 1, 1} = sprintf('双模型 K+ 参数：%.12g', results.final_params.K_pos); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('双模型 K- 参数：%.12g', results.final_params.K_neg); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('双模型 K 参数：%.12g', results.final_params.K); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('双模型 T 参数：%.12g', results.final_params.T); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('双模型 alpha 参数：%.12g', results.final_params.alpha); %#ok<AGROW>
+    if isfield(results, 'compare_single_params')
+        summaryLines{end + 1, 1} = sprintf('单模型 K 参数：%.12g', results.compare_single_params.K); %#ok<AGROW>
+        summaryLines{end + 1, 1} = sprintf('单模型 T 参数：%.12g', results.compare_single_params.T); %#ok<AGROW>
+        summaryLines{end + 1, 1} = sprintf('单模型 alpha 参数：%.12g', results.compare_single_params.alpha); %#ok<AGROW>
+    end
+    if isfield(results.stage_results, 'stage4')
+        stage4 = results.stage_results.stage4;
+        summaryLines{end + 1, 1} = sprintf('双模型航向角 RMSE：%.6f deg', stage4.dual_model.heading_rmse_deg); %#ok<AGROW>
+        summaryLines{end + 1, 1} = sprintf('单模型航向角 RMSE：%.6f deg', stage4.single_model.heading_rmse_deg); %#ok<AGROW>
+        summaryLines{end + 1, 1} = sprintf('双模型辨识误差：[%.6f, %.6f] deg', ... %#ok<AGROW>
+            stage4.dual_model.heading_error_min_deg, stage4.dual_model.heading_error_max_deg);
+        summaryLines{end + 1, 1} = sprintf('单模型辨识误差：[%.6f, %.6f] deg', ... %#ok<AGROW>
+            stage4.single_model.heading_error_min_deg, stage4.single_model.heading_error_max_deg);
+    end
+else
+    summaryLines{end + 1, 1} = sprintf('K+ 参数：%.12g', results.final_params.K_pos); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('K- 参数：%.12g', results.final_params.K_neg); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('K 参数：%.12g', results.final_params.K); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('T 参数：%.12g', results.final_params.T); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('alpha 参数：%.12g', results.final_params.alpha); %#ok<AGROW>
+    summaryLines{end + 1, 1} = sprintf('u_trim 参数：%.12g', results.final_params.u_trim); %#ok<AGROW>
+end
+
+summaryLines{end + 1, 1} = ''; %#ok<AGROW>
+summaryLines{end + 1, 1} = '本次选中的文件：'; %#ok<AGROW>
 
 if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.stage1, 'turning_radius_m') ...
         && isfinite(results.stage_results.stage1.turning_radius_m)
@@ -1536,18 +1928,52 @@ if ~(isfinite(params.KPos) && isfinite(params.KNeg) && isfinite(params.T) && isf
 end
 end
 
-function cached = loadLatestCache(cacheFile)
-cached = struct([]);
-if ~isfile(cacheFile)
-    return;
+function params = initializeCompareSingleParams(cfg)
+params = struct();
+params.K = cfg.CompareSingleK;
+params.T = cfg.CompareSingleT;
+params.alpha = cfg.CompareSingleAlpha;
+params.SourceK = 'compare_input';
+params.SourceT = 'compare_input';
+params.SourceAlpha = 'compare_input';
+
+if ~(isfinite(params.K) && isfinite(params.T))
+    error('单/双模型对比验证模式要求显式提供单模型 K 和 T。');
 end
-try
-    data = load(cacheFile, 'results');
-    if isfield(data, 'results')
-        cached = data.results;
+if ~isfinite(params.alpha)
+    params.alpha = 0.0;
+    params.SourceAlpha = 'compare_default_zero';
+end
+end
+
+function cached = loadLatestCache(cacheFile, fallbackCacheFile)
+cached = struct([]);
+if nargin < 2
+    fallbackCacheFile = '';
+end
+
+candidateFiles = {cacheFile};
+if strlength(string(fallbackCacheFile)) > 0
+    fallbackCacheFile = char(string(fallbackCacheFile));
+    if ~strcmpi(fallbackCacheFile, char(string(cacheFile)))
+        candidateFiles{end + 1} = fallbackCacheFile; %#ok<AGROW>
     end
-catch
-    cached = struct([]);
+end
+
+for i = 1:numel(candidateFiles)
+    currentFile = char(string(candidateFiles{i}));
+    if ~isfile(currentFile)
+        continue;
+    end
+    try
+        data = load(currentFile, 'results');
+        if isfield(data, 'results')
+            cached = data.results;
+            return;
+        end
+    catch
+        cached = struct([]);
+    end
 end
 end
 
@@ -1566,6 +1992,60 @@ out.T_source = params.SourceT;
 out.alpha_source = params.SourceAlpha;
 out.u_trim_source = params.SourceUTrim;
 out.model_variant = 'dual_branch_gain';
+end
+
+function out = compareParamsToStruct(params)
+out = struct();
+out.K = params.K;
+out.T = params.T;
+out.alpha = params.alpha;
+out.K_source = params.SourceK;
+out.T_source = params.SourceT;
+out.alpha_source = params.SourceAlpha;
+out.model_variant = 'single_gain_compare';
+end
+
+function out = buildSingleModelCompareStats(params, data, rModel, headingModelDeg, validHeadingErrorDeg)
+headingErrorDeg = data.headingRelDeg - headingModelDeg;
+out = struct();
+out.K = params.K;
+out.T = params.T;
+out.alpha = params.alpha;
+out.yaw_rate_rmse_deg_s = rad2deg(nomoto_utils.rmse(data.yawRateRadSFiltered, rModel));
+out.yaw_rate_r2 = nomoto_utils.rsquared(data.yawRateRadSFiltered, rModel);
+out.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingModelDeg);
+out.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingModelDeg);
+out.heading_error_max_abs_deg = max(abs(headingErrorDeg));
+if isempty(validHeadingErrorDeg)
+    out.heading_error_min_deg = NaN;
+    out.heading_error_max_deg = NaN;
+else
+    out.heading_error_min_deg = min(validHeadingErrorDeg);
+    out.heading_error_max_deg = max(validHeadingErrorDeg);
+end
+end
+
+function out = buildDualModelCompareStats(params, data, rModel, headingModelDeg, validHeadingErrorDeg)
+headingErrorDeg = data.headingRelDeg - headingModelDeg;
+out = struct();
+out.K_pos = params.KPos;
+out.K_neg = params.KNeg;
+out.K = equivalentBranchK(params.KPos, params.KNeg);
+out.T = params.T;
+out.alpha = params.alpha;
+out.asymmetry_ratio = safeBranchRatio(params.KNeg, params.KPos);
+out.yaw_rate_rmse_deg_s = rad2deg(nomoto_utils.rmse(data.yawRateRadSFiltered, rModel));
+out.yaw_rate_r2 = nomoto_utils.rsquared(data.yawRateRadSFiltered, rModel);
+out.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingModelDeg);
+out.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingModelDeg);
+out.heading_error_max_abs_deg = max(abs(headingErrorDeg));
+if isempty(validHeadingErrorDeg)
+    out.heading_error_min_deg = NaN;
+    out.heading_error_max_deg = NaN;
+else
+    out.heading_error_min_deg = min(validHeadingErrorDeg);
+    out.heading_error_max_deg = max(validHeadingErrorDeg);
+end
 end
 
 function value = fitBranchGain(uBranch, rBranch)
@@ -1705,6 +2185,23 @@ ax.XColor = [0.15, 0.15, 0.15];
 ax.YColor = [0.15, 0.15, 0.15];
 end
 
+function expandYAxis(values, paddingRatio)
+values = values(isfinite(values));
+if isempty(values)
+    return;
+end
+
+yMin = min(values);
+yMax = max(values);
+ySpan = yMax - yMin;
+if ySpan <= eps
+    yPad = max(1.0, 0.15 * max(abs([yMin, yMax])));
+else
+    yPad = paddingRatio * ySpan;
+end
+ylim([yMin - yPad, yMax + yPad]);
+end
+
 function h = plotDiscreteSeries(x, y, colorSpec)
 h = scatter(x, y, 18, colorSpec, 'filled', ...
     'MarkerEdgeColor', [1, 1, 1], 'LineWidth', 0.45);
@@ -1797,8 +2294,10 @@ switch modeText
         modeText = 'identify';
     case {'validate', 'validation', 'verify', '验证', '楠岃瘉'}
         modeText = 'validate';
+    case {'compare_validate', 'compare', 'comparevalidation', 'single_dual_compare', '对比验证'}
+        modeText = 'compare_validate';
     otherwise
-        error('Mode only supports identify / validate.');
+        error('Mode only supports identify / validate / compare_validate.');
 end
 end
 
