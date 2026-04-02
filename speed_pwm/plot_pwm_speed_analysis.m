@@ -2,11 +2,9 @@
 % 功能说明：
 % 1. 支持读取单个日志文件，或一个文件夹中的多个日志文件。
 % 2. 从日志中解析 timestamp、pwm、speed_mps 三个字段。
-% 3. 绘制全程 time-pwm 点线图。
-% 4. 绘制全程 time-speed 点线图。
-% 5. 绘制分阶段 time-speed 子图。
-% 6. 提取每个 PWM 阶段后段的平均速度，作为稳态速度。
-% 7. 绘制稳态 pwm-speed 散点图，并在同一张图中完成最小二乘拟合。
+% 3. 绘制分阶段 time-speed 子图。
+% 4. 提取每个 PWM 阶段后段的平均速度，作为稳态速度。
+% 5. 绘制稳态 pwm-speed 散点图，并在同一张图中完成最小二乘拟合。
 %
 % 日志格式示例：
 % speed_pwm_experiment timestamp=0.000, speed_mps=0.000000, vx=0.000000, vy=0.000000, vz=0.000000, pwm=1000, control_mode=1, speed_stamp=0.000, speed_age=0.000
@@ -97,14 +95,11 @@ fitDegree = 2;
 fitResponseSymbol = 'u';
 fitVariableSymbol = 'n';
 
-% 是否在拟合中额外加入一个人工约束点
-% 例如可加入“PWM = 1500 时，速度 = 0”这一先验信息
-enableExtraFitPoint = true;
-extraFitPointPwm = 1500;
-extraFitPointSpeed = 0;
+% 拟合曲线从哪个 PWM 开始绘制
+fitCurveStartPwm = 1550;
 
-% 是否在稳态散点图中显示这个额外拟合点
-showExtraFitPointOnPlot = true;
+% 拟合曲线绘制到哪个 PWM 结束
+fitCurveEndPwm = 1800;
 
 % 分阶段 time-speed 子图中是否使用相对时间
 % true  -> 每一段都从 0 开始计时，更便于比较各段响应过程
@@ -129,6 +124,12 @@ compactSegmentFigureLayout = true;
 % false -> 每个子图都显示完整坐标标签
 showOuterLabelsOnly = true;
 
+% 是否将各 PWM 的速度-时间图和稳态 PWM-Speed 特性曲线导出为 EPS 矢量图
+saveEpsFigures = false;
+
+% EPS 输出目录（相对于当前脚本目录）
+outputRoot = 'results';
+
 % 绘图样式
 lineWidth = 1.1;
 markerSize = 5;
@@ -138,6 +139,12 @@ fitLineWidth = 1.4;
 actualDataColor = [74, 35, 120] / 255;
 actualLineColor = [170, 160, 196] / 255;
 fitLineColor = [0.82, 0.10, 0.10];
+
+resolvedOutputRoot = '';
+if saveEpsFigures
+    resolvedOutputRoot = resolveOutputFolder(outputRoot, scriptDir);
+    ensureFolder(resolvedOutputRoot);
+end
 
 %% ======================== 读取与解析日志 ========================
 
@@ -197,37 +204,7 @@ numSegments = numel(segments);
 
 fprintf('识别到 PWM 阶段数：%d\n', numSegments);
 
-%% ======================== 图 1：全程 time-pwm ========================
-
-figure('Name', 'Full Time-PWM', 'Color', 'w');
-hold on;
-plot(timeData, pwmData, '-', 'Color', actualLineColor, 'LineWidth', lineWidth, ...
-    'HandleVisibility', 'off');
-plot(timeData, pwmData, '.', 'Color', actualDataColor, 'MarkerSize', pointMarkerSize, ...
-    'DisplayName', 'PWM 采样点');
-applyThesisAxesStyle();
-xlabel('Time (s)');
-ylabel('PWM');
-title('全程 PWM 随时间变化点线图');
-legend('Location', 'best');
-hold off;
-
-%% ======================== 图 2：全程 time-speed ========================
-
-figure('Name', 'Full Time-Speed', 'Color', 'w');
-hold on;
-plot(timeData, speedData, '-', 'Color', actualLineColor, 'LineWidth', lineWidth, ...
-    'HandleVisibility', 'off');
-plot(timeData, speedData, '.', 'Color', actualDataColor, 'MarkerSize', pointMarkerSize, ...
-    'DisplayName', '速度采样点');
-applyThesisAxesStyle();
-xlabel('Time (s)');
-ylabel('Speed (m/s)');
-title('全程速度随时间变化点线图');
-legend('Location', 'best');
-hold off;
-
-%% ======================== 图 3：按唯一 PWM 汇总的 time-speed 子图 ========================
+%% ======================== 图 1：按唯一 PWM 汇总的 time-speed 子图 ========================
 
 uniquePwmValues = sort(unique([segments.pwmValue]));
 numUniquePwms = numel(uniquePwmValues);
@@ -246,6 +223,14 @@ if unifySegmentPlotYLimits
 
     segmentYLimits = [segmentSpeedMin - yPadding, segmentSpeedMax + yPadding];
 end
+
+segmentPlotCfg = struct( ...
+    'useRelativeTimeInSegmentPlots', useRelativeTimeInSegmentPlots, ...
+    'pointMarkerSize', pointMarkerSize, ...
+    'actualDataColor', actualDataColor, ...
+    'segmentPlotDuration', segmentPlotDuration, ...
+    'unifySegmentPlotYLimits', unifySegmentPlotYLimits, ...
+    'segmentYLimits', segmentYLimits);
 
 figure('Name', 'Segmented Time-Speed', 'Color', 'w');
 [numRows, numCols] = calcSubplotLayout(numUniquePwms);
@@ -270,65 +255,24 @@ for i = 1:numUniquePwms
     else
         nexttile(segmentTileLayout, i);
     end
-    hold on;
-
-    for runIndex = 1:numel(currentSegments)
-        currentTime = currentSegments(runIndex).time;
-        currentSpeed = currentSegments(runIndex).speed;
-
-        if useRelativeTimeInSegmentPlots
-            plotTime = currentTime - currentTime(1);
-            xLabelText = 'Relative Time (s)';
-        else
-            plotTime = currentTime;
-            xLabelText = 'Time (s)';
-        end
-
-        plot(plotTime, currentSpeed, '.', 'Color', actualDataColor, 'MarkerSize', pointMarkerSize, ...
-            'HandleVisibility', 'off');
-    end
-
-    applyThesisAxesStyle();
-    ax = gca;
-    ax.PositionConstraint = 'innerposition';
+    currentAx = gca;
 
     if compactSegmentFigureLayout && showOuterLabelsOnly
-        if currentRow == numRows
-            xlabel(xLabelText);
-        else
-            xlabel('');
-            ax.XTickLabel = [];
-        end
-
-        if currentCol == 1
-            ylabel('Speed (m/s)');
-        else
-            ylabel('');
-            ax.YTickLabel = [];
-        end
+        showXAxisLabel = currentRow == numRows;
+        showYAxisLabel = currentCol == 1;
     else
-        xlabel(xLabelText);
-        ylabel('Speed (m/s)');
+        showXAxisLabel = true;
+        showYAxisLabel = true;
     end
 
-    if useRelativeTimeInSegmentPlots
-        xlim([0, segmentPlotDuration]);
-    else
-        currentStartTime = min(arrayfun(@(segmentItem) segmentItem.time(1), currentSegments));
-        xlim([currentStartTime, currentStartTime + segmentPlotDuration]);
-    end
+    drawPwmSegmentAxes(currentAx, currentSegments, currentPwm, segmentPlotCfg, showXAxisLabel, showYAxisLabel);
 
-    if unifySegmentPlotYLimits
-        ylim(segmentYLimits);
+    if saveEpsFigures
+        segmentBaseName = sprintf('pwm_time_speed_%s', numericValueToFileToken(currentPwm));
+        saveSingleSegmentFigureAsEps( ...
+            currentSegments, currentPwm, ...
+            fullfile(resolvedOutputRoot, segmentBaseName), segmentPlotCfg);
     end
-
-    if numel(currentSegments) > 1
-        title(sprintf('PWM = %.0f (%d runs)', currentPwm, numel(currentSegments)));
-    else
-        title(sprintf('PWM = %.0f', currentPwm));
-    end
-
-    hold off;
 end
 
 if ~isempty(segmentTileLayout)
@@ -352,21 +296,16 @@ for i = 1:numel(steadyPwm)
         i, steadyPwm(i), steadySpeed(i), steadyInfo(i).numPointsUsed);
 end
 
-%% ======================== 图 4：稳态 pwm-speed + 加权最小二乘拟合 ========================
+%% ======================== 图 2：稳态 pwm-speed + 加权最小二乘拟合 ========================
 
 [fitWeights, fitWeightPwmValues, fitRepeatCounts] = buildBalancedPwmWeights(steadyPwm);
 fitPwmData = steadyPwm;
 fitSpeedData = steadySpeed;
-
-if enableExtraFitPoint
-    fitPwmData(end + 1, 1) = extraFitPointPwm;
-    fitSpeedData(end + 1, 1) = extraFitPointSpeed;
-end
-
-[fitWeights, fitWeightPwmValues, fitRepeatCounts] = buildBalancedPwmWeights(fitPwmData);
+curveStartPwm = min(fitCurveStartPwm, max(fitPwmData));
+curveEndPwm = max(fitCurveEndPwm, max(fitPwmData));
 numUniqueFitPwms = numel(fitWeightPwmValues);
 
-figure('Name', 'Steady PWM-Speed with Fit', 'Color', 'w');
+steadyFigure = figure('Name', 'Steady PWM-Speed with Fit', 'Color', 'w');
 hold on;
 applyThesisAxesStyle();
 
@@ -376,17 +315,9 @@ scatter(steadyPwm, steadySpeed, steadyScatterSize, 'o', ...
     'LineWidth', 0.6, ...
     'DisplayName', '稳态散点');
 
-if enableExtraFitPoint && showExtraFitPointOnPlot
-    scatter(extraFitPointPwm, extraFitPointSpeed, steadyScatterSize + 10, 's', ...
-        'MarkerFaceColor', fitLineColor, ...
-        'MarkerEdgeColor', fitLineColor, ...
-        'LineWidth', 0.8, ...
-        'DisplayName', '附加拟合点');
-end
-
 if numUniqueFitPwms >= fitDegree + 1
     fitCoeff = weightedPolyfit(fitPwmData, fitSpeedData, fitDegree, fitWeights);
-    xFit = linspace(min(fitPwmData), max(fitPwmData), 300);
+    xFit = linspace(curveStartPwm, curveEndPwm, 400);
     yFit = polyval(fitCoeff, xFit);
 
     plot(xFit, yFit, '-', 'Color', fitLineColor, 'LineWidth', fitLineWidth, ...
@@ -408,6 +339,10 @@ ylabel('Steady Speed (m/s)');
 legend('Location', 'best');
 hold off;
 
+if saveEpsFigures
+    saveGraphicsAsEps(steadyFigure, fullfile(resolvedOutputRoot, 'steady_pwm_speed_curve'));
+end
+
 %% ======================== 命令行输出拟合结果 ========================
 
 if exist('fitCoeff', 'var')
@@ -418,15 +353,15 @@ if exist('fitCoeff', 'var')
     printPolynomialCoefficientDetails(fitCoeff, 'PWM', 'SteadySpeed', fitVariableSymbol);
     fprintf('Weighted R^2 = %.6f\n', rSquared);
 
-    if enableExtraFitPoint
-        fprintf('附加拟合点：PWM = %.1f, SteadySpeed = %.3f m/s\n', extraFitPointPwm, extraFitPointSpeed);
-    end
-
     fprintf('\n各 PWM 的重复试验点数与单点权重：\n');
     for weightIndex = 1:numel(fitWeightPwmValues)
         fprintf('PWM = %6.1f, 稳态点数 = %d, 单点权重 = %.4f, 该 PWM 总权重 = 1.0000\n', ...
             fitWeightPwmValues(weightIndex), fitRepeatCounts(weightIndex), 1 / fitRepeatCounts(weightIndex));
     end
+end
+
+if saveEpsFigures
+    fprintf('EPS 输出目录：%s\n', resolvedOutputRoot);
 end
 
 fprintf('\n分析完成。\n');
@@ -757,13 +692,144 @@ function [numRows, numCols] = calcSubplotLayout(numPlots)
     numCols = ceil(numPlots / numRows);
 end
 
-function applyThesisAxesStyle()
+function drawPwmSegmentAxes(ax, currentSegments, currentPwm, segmentPlotCfg, showXAxisLabel, showYAxisLabel)
+% 绘制某个 PWM 下的速度-时间图，可用于总览子图和单独导出图。
+
+    hold(ax, 'on');
+
+    for runIndex = 1:numel(currentSegments)
+        currentTime = currentSegments(runIndex).time;
+        currentSpeed = currentSegments(runIndex).speed;
+
+        if segmentPlotCfg.useRelativeTimeInSegmentPlots
+            plotTime = currentTime - currentTime(1);
+            xLabelText = 'Relative Time (s)';
+        else
+            plotTime = currentTime;
+            xLabelText = 'Time (s)';
+        end
+
+        plot(ax, plotTime, currentSpeed, '.', ...
+            'Color', segmentPlotCfg.actualDataColor, ...
+            'MarkerSize', segmentPlotCfg.pointMarkerSize, ...
+            'HandleVisibility', 'off');
+    end
+
+    applyThesisAxesStyle(ax);
+    ax.PositionConstraint = 'innerposition';
+
+    if showXAxisLabel
+        xlabel(ax, xLabelText);
+    else
+        xlabel(ax, '');
+        ax.XTickLabel = [];
+    end
+
+    if showYAxisLabel
+        ylabel(ax, 'Speed (m/s)');
+    else
+        ylabel(ax, '');
+        ax.YTickLabel = [];
+    end
+
+    if segmentPlotCfg.useRelativeTimeInSegmentPlots
+        xlim(ax, [0, segmentPlotCfg.segmentPlotDuration]);
+    else
+        currentStartTime = min(arrayfun(@(segmentItem) segmentItem.time(1), currentSegments));
+        xlim(ax, [currentStartTime, currentStartTime + segmentPlotCfg.segmentPlotDuration]);
+    end
+
+    if segmentPlotCfg.unifySegmentPlotYLimits
+        ylim(ax, segmentPlotCfg.segmentYLimits);
+    end
+
+    title(ax, sprintf('PWM = %.0f', currentPwm));
+    hold(ax, 'off');
+end
+
+function epsPath = saveSingleSegmentFigureAsEps(currentSegments, currentPwm, basePath, segmentPlotCfg)
+% 将某个 PWM 的速度-时间图单独导出为 EPS。
+
+    fig = figure('Visible', 'off', 'Color', 'w', 'Position', [100, 100, 760, 520]);
+    ax = axes('Parent', fig);
+    drawPwmSegmentAxes(ax, currentSegments, currentPwm, segmentPlotCfg, true, true);
+    epsPath = saveGraphicsAsEps(fig, basePath);
+    close(fig);
+end
+
+function epsPath = saveGraphicsAsEps(graphicsHandle, basePath)
+% 保存 Figure/Axes 为 EPS 矢量图。
+
+    ensureFolder(fileparts(basePath));
+    epsPath = [basePath '.eps'];
+    drawnow;
+    exportgraphics(graphicsHandle, epsPath, 'ContentType', 'vector');
+end
+
+function resolvedFolder = resolveOutputFolder(outputRoot, scriptDir)
+% 输出目录优先按脚本所在目录解析相对路径。
+
+    if nargin < 2 || isempty(scriptDir)
+        scriptDir = pwd;
+    end
+
+    if nargin < 1 || isempty(outputRoot)
+        resolvedFolder = fullfile(scriptDir, 'results');
+        return;
+    end
+
+    outputRoot = char(string(outputRoot));
+    if isAbsolutePath(outputRoot)
+        resolvedFolder = outputRoot;
+    else
+        resolvedFolder = fullfile(scriptDir, outputRoot);
+    end
+end
+
+function ensureFolder(folderPath)
+% 若目录不存在则创建。
+
+    if isempty(folderPath)
+        return;
+    end
+
+    if ~isfolder(folderPath)
+        mkdir(folderPath);
+    end
+end
+
+function tf = isAbsolutePath(pathText)
+% 判断路径是否为绝对路径。
+
+    pathText = char(string(pathText));
+    tf = ~isempty(regexp(pathText, '^[A-Za-z]:[\\/]|^\\\\', 'once'));
+end
+
+function token = numericValueToFileToken(value)
+% 将数值转成适合文件名的短字符串。
+
+    if abs(value - round(value)) < 1e-9
+        token = sprintf('%d', round(value));
+        return;
+    end
+
+    token = sprintf('%.6f', value);
+    token = regexprep(token, '0+$', '');
+    token = regexprep(token, '\.$', '');
+    token = strrep(token, '.', 'p');
+    token = strrep(token, '-', 'm');
+end
+
+function applyThesisAxesStyle(ax)
 % 统一设置毕业论文中更常见的坐标轴风格。
 % 说明：白底、带边框、适中的线宽和字号，适合后续插入论文。
 
-    grid on;
-    box on;
-    ax = gca;
+    if nargin < 1 || isempty(ax)
+        ax = gca;
+    end
+
+    grid(ax, 'on');
+    box(ax, 'on');
     ax.LineWidth = 0.9;
     ax.FontSize = 11;
 end
