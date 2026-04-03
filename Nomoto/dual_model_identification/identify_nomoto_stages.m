@@ -16,7 +16,7 @@ useRateFilter = true;
 showFigures = true;
 %
 % 是否额外保存 EPS 矢量图
-saveEpsFigures = false;
+saveEpsFigures = true;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
@@ -1035,10 +1035,7 @@ stageResult.residual_threshold_neg_deg_s = rad2deg(tailNeg.residualTol);
 stageResult.residual_removed_count_pos = tailPos.residualRemovedCount;
 stageResult.residual_removed_count_neg = tailNeg.residualRemovedCount;
 
-fig = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-双定常回转 K 辨识');
-tiledlayout(fig, 2, 1, 'Padding', 'compact', 'TileSpacing', 'compact');
-
-nexttile;
+figPos = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-正向定常回转 K+ 辨识');
 hMeasured = plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
 hold on;
 hFiltered = plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
@@ -1052,7 +1049,7 @@ legend([hMeasured, hFiltered, hStart, hCenter], ...
     {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
-nexttile;
+figNeg = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-反向定常回转 K- 辨识');
 hMeasured = plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
 hold on;
 hFiltered = plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
@@ -1066,7 +1063,9 @@ legend([hMeasured, hFiltered, hStart, hCenter], ...
     {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
-stageResult.figure = saveFigureBundle(fig, fullfile(stageFolder, 'stage1_identification_K_dual'), cfg);
+stageResult.figure = struct( ...
+    'positive', saveFigureBundle(figPos, fullfile(stageFolder, 'stage1_identification_K_dual_pos'), cfg), ...
+    'negative', saveFigureBundle(figNeg, fullfile(stageFolder, 'stage1_identification_K_dual_neg'), cfg));
 end
 
 function gpsFigure = plotStage1DualGps(dataA, dataB, stageFolder, cfg)

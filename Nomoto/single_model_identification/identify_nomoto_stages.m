@@ -15,7 +15,7 @@ useRateFilter = true;
 showFigures = true;
 %
 % 是否额外保存 EPS 矢量图
-saveEpsFigures = true;
+saveEpsFigures = false;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
@@ -111,6 +111,7 @@ scriptDir = fileparts(mfilename('fullpath'));
 cfg = buildConfig(scriptDir, experimentRoot, opts);
 ensureFolder(cfg.OutputRoot);
 ensureFolder(cfg.RunOutputRoot);
+fprintf('===== 非线性 Nomoto 辨识试验与验证 =====\n');
 
  [catalog, resolvedSearchRoot] = discoverStageCsvFiles(cfg);
 if ~isempty(resolvedSearchRoot)
@@ -204,6 +205,15 @@ if isfield(results.stage_results, 'stage1') && isfield(results.stage_results.sta
         && isfinite(results.stage_results.stage1.turning_radius_m)
     fprintf('  stage1 回转半径 ≈ %.3f m（直径 ≈ %.3f m）\n', ...
         results.stage_results.stage1.turning_radius_m, results.stage_results.stage1.turning_diameter_m);
+end
+if isfield(results.stage_results, 'stage4') ...
+        && isfield(results.stage_results.stage4, 'heading_error_min_deg') ...
+        && isfield(results.stage_results.stage4, 'heading_error_max_deg') ...
+        && isfinite(results.stage_results.stage4.heading_error_min_deg) ...
+        && isfinite(results.stage_results.stage4.heading_error_max_deg)
+    fprintf('  辨识误差：[%.4f,%.4f] deg\n', ...
+        results.stage_results.stage4.heading_error_min_deg, ...
+        results.stage_results.stage4.heading_error_max_deg);
 end
 fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
 end
@@ -335,7 +345,11 @@ function meta = inspectStageCsv(filePath, dirEntry)
 meta = struct([]);
 
 try
-    tbl = readtable(filePath, 'TextType', 'string');
+    tbl = readStageTable(filePath, { ...
+        {'elapsed_time_s', 'elapsed_time', 'time_s', 'time', 'timestamp'}, ...
+        {'yaw_rate_deg_s', 'yaw_rate_degps', 'yaw_rate', 'r'}, ...
+        {'left_pwm'}, ...
+        {'right_pwm'}});
 catch
     return;
 end
@@ -424,7 +438,11 @@ tf = strcmp(cfg.Mode, 'validate');
 end
 
 function data = readStageData(filePath, cfg)
-tbl = readtable(filePath, 'TextType', 'string');
+tbl = readStageTable(filePath, { ...
+    {'elapsed_time_s', 'elapsed_time', 'time_s', 'time', 'timestamp'}, ...
+    {'yaw_rate_deg_s', 'yaw_rate_degps', 'yaw_rate', 'r'}, ...
+    {'left_pwm'}, ...
+    {'right_pwm'}});
 names = normalizeNames(tbl.Properties.VariableNames);
 
 timeS = numericColumn(tbl, names, {'elapsed_time_s', 'elapsed_time', 'time_s', 'time'}, true);
@@ -568,6 +586,80 @@ data.latitude = optionalColumn(latitude, numel(timeS));
 data.analysisMask = columnVector(analysisMask);
 data.dtMedian = median(diff(timeS));
 data.sampleCount = numel(timeS);
+end
+
+function tbl = readStageTable(filePath, requiredColumnGroups)
+if nargin < 2
+    requiredColumnGroups = {};
+end
+
+[tblDefault, defaultErr] = tryReadStageTable(filePath, '');
+defaultOk = isempty(defaultErr) && hasRequiredColumnGroups(tblDefault, requiredColumnGroups);
+if defaultOk
+    tbl = tblDefault;
+    return;
+end
+
+[tblUtf8, utf8Err] = tryReadStageTable(filePath, 'UTF-8');
+utf8Ok = isempty(utf8Err) && hasRequiredColumnGroups(tblUtf8, requiredColumnGroups);
+if utf8Ok
+    fprintf('检测到默认读取异常，改用 UTF-8 重读：%s\n', filePath);
+    tbl = tblUtf8;
+    return;
+end
+
+if isempty(defaultErr)
+    tbl = tblDefault;
+    return;
+end
+
+if isempty(utf8Err)
+    tbl = tblUtf8;
+    return;
+end
+
+error('读取数据文件失败：%s\n默认读取失败：%s\nUTF-8 重读失败：%s', ...
+    filePath, defaultErr.message, utf8Err.message);
+end
+
+function [tbl, readErr] = tryReadStageTable(filePath, encodingName)
+tbl = table();
+readErr = [];
+
+try
+    if strlength(string(encodingName)) == 0
+        tbl = readtable(filePath, 'TextType', 'string');
+    else
+        tbl = readtable(filePath, 'TextType', 'string', 'Encoding', char(string(encodingName)));
+    end
+catch err
+    readErr = err;
+end
+end
+
+function tf = hasRequiredColumnGroups(tbl, requiredColumnGroups)
+if isempty(requiredColumnGroups)
+    tf = true;
+    return;
+end
+
+if ~istable(tbl) || width(tbl) == 0
+    tf = false;
+    return;
+end
+
+names = normalizeNames(tbl.Properties.VariableNames);
+tf = true;
+for i = 1:numel(requiredColumnGroups)
+    candidateNames = requiredColumnGroups{i};
+    if ischar(candidateNames) || isstring(candidateNames)
+        candidateNames = cellstr(string(candidateNames));
+    end
+    if ~any(ismember(names, normalizeNames(candidateNames)))
+        tf = false;
+        return;
+    end
+end
 end
 
 function overviewFiles = plotCommonFigures(data, stageFolder, cfg)
@@ -1079,6 +1171,7 @@ r0 = data.yawRateRadSFiltered(1);
 rNonlinear = nomoto_utils.simulateNonlinearNomoto(data.timeS, u, params.K, params.T, params.alpha, r0);
 headingNonlinearDeg = cumtrapz(data.timeS, rad2deg(rNonlinear));
 headingErrorDeg = data.headingRelDeg - headingNonlinearDeg;
+validHeadingErrorDeg = headingErrorDeg(isfinite(headingErrorDeg));
 
 stageResult = struct();
 stageResult.method = 'model_validation';
@@ -1090,12 +1183,20 @@ stageResult.yaw_rate_r2 = nomoto_utils.rsquared(data.yawRateRadSFiltered, rNonli
 stageResult.heading_rmse_deg = nomoto_utils.rmse(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_r2 = nomoto_utils.rsquared(data.headingRelDeg, headingNonlinearDeg);
 stageResult.heading_error_max_abs_deg = max(abs(headingErrorDeg));
+if isempty(validHeadingErrorDeg)
+    stageResult.heading_error_min_deg = NaN;
+    stageResult.heading_error_max_deg = NaN;
+else
+    stageResult.heading_error_min_deg = min(validHeadingErrorDeg);
+    stageResult.heading_error_max_deg = max(validHeadingErrorDeg);
+end
 
 figYawRate = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段4角速度验证');
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.measuredColor, 'LineWidth', 1.1);
 hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
+expandYAxis([rad2deg(data.yawRateRadSFiltered); rad2deg(rNonlinear)], 0.18);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
 title('阶段4 角速度验证');
@@ -1107,6 +1208,7 @@ plot(data.timeS, data.headingRelDeg, '-', 'Color', style.measuredColor, 'LineWid
 hold on;
 plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
+expandYAxis([data.headingRelDeg; headingNonlinearDeg], 0.18);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
 title('阶段4 航向角验证');
@@ -1320,6 +1422,23 @@ ax.GridAlpha = 0.18;
 ax.MinorGridAlpha = 0.08;
 ax.XColor = [0.15, 0.15, 0.15];
 ax.YColor = [0.15, 0.15, 0.15];
+end
+
+function expandYAxis(values, paddingRatio)
+values = values(isfinite(values));
+if isempty(values)
+    return;
+end
+
+yMin = min(values);
+yMax = max(values);
+ySpan = yMax - yMin;
+if ySpan <= eps
+    yPad = max(1.0, 0.15 * max(abs([yMin, yMax])));
+else
+    yPad = paddingRatio * ySpan;
+end
+ylim([yMin - yPad, yMax + yPad]);
 end
 
 function h = plotDiscreteSeries(x, y, colorSpec)
