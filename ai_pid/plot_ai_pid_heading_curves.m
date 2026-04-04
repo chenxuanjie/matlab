@@ -16,8 +16,9 @@ function results = plot_ai_pid_heading_curves(varargin)
 % 1. 不传输入时，会按“用户配置区”里的读取模式选择 ai_pid、pid 或两者对比。
 % 2. 自动模式只会选择最新的 1 个 CSV 文件。
 % 3. 显式传入文件夹时，会读取该文件夹下最新的 1 个可用 CSV。
-% 4. 显式传入 2 个 CSV 或 2 个文件夹时，会生成对比图和误差图。
-% 4. CSV 至少需要包含：时间列、当前航向角列、期望航向角列。
+% 4. 显式传入 2 个 CSV 或 2 个文件夹时，会生成对比图。
+% 5. 如果 CSV 包含 kp/ki/kd 列，会额外生成增益随时间变化图。
+% 6. CSV 至少需要包含：时间列、当前航向角列、期望航向角列。
 %
 % 常用可选项（opts）：
 %   opts.OutputRoot            -> 结果输出目录，默认 ai_pid/results
@@ -30,6 +31,8 @@ function results = plot_ai_pid_heading_curves(varargin)
 %   opts.TimeColumn            -> 指定时间列名或列序号
 %   opts.CurrentHeadingColumn  -> 指定当前航向角列名或列序号
 %   opts.ExpectedHeadingColumn -> 指定期望航向角列名或列序号
+%   opts.SettlingBandRatio     -> 稳定时间误差带比例，默认 0.02
+%   opts.SettlingBandMinDeg    -> 稳定时间最小误差带，默认 1 deg
 
     %% ======================== 用户配置区（可直接修改） ========================
     % 默认输入路径。留空表示按下面的读取模式自动选择文件。
@@ -54,6 +57,10 @@ function results = plot_ai_pid_heading_curves(varargin)
     currentHeadingColumn = '';
     % 期望航向角列名。留空表示按内置候选列自动匹配。
     expectedHeadingColumn = '';
+    % 稳定时间判据中的相对误差带比例，例如 0.02 表示 2%。
+    settlingBandRatio = 0.02;
+    % 稳定时间判据中的最小绝对误差带，单位 deg。
+    settlingBandMinDeg = 1.0;
     %% ======================== 用户配置区结束 ========================
 
     [csvInputs, opts] = parseMainInputs(varargin, defaultCsvInputs);
@@ -61,7 +68,8 @@ function results = plot_ai_pid_heading_curves(varargin)
     scriptDir = fileparts(mfilename('fullpath'));
     cfg = buildConfig(scriptDir, opts, showFigures, saveEpsFigures, ...
         normalizeTimeToZero, unwrapHeading, outputRoot, readMode, delimiter, ...
-        timeColumn, currentHeadingColumn, expectedHeadingColumn);
+        timeColumn, currentHeadingColumn, expectedHeadingColumn, ...
+        settlingBandRatio, settlingBandMinDeg);
 
     ensureFolder(cfg.OutputRoot);
     ensureFolder(cfg.RunOutputRoot);
@@ -107,21 +115,37 @@ function results = plot_ai_pid_heading_curves(varargin)
     results.selected_files = selectedFiles;
     results.runs = datasets;
     results.figure_files = figureFiles;
+    results.comparison_summary = buildComparisonSummary(datasets);
     results.summary_files = saveSummaryArtifacts(results, cfg);
 
     fprintf('\n航向角曲线结果汇总：\n');
-    for i = 1:numel(datasets)
-        fprintf('  [%d] %s\n', i, datasets(i).filePath);
-        fprintf('      均方根误差 = %.6f deg\n', datasets(i).metrics.rmse_deg);
-        fprintf('      平均绝对误差 = %.6f deg\n', datasets(i).metrics.mae_deg);
-        fprintf('      最大绝对误差 = %.6f deg\n', datasets(i).metrics.max_abs_error_deg);
+    if results.comparison_summary.available
+        fprintf('  ai_pid 文件: %s\n', results.comparison_summary.ai_pid_path);
+        fprintf('  pid 文件: %s\n', results.comparison_summary.pid_path);
+        fprintf('%s\n', buildComparisonSummaryText(results.comparison_summary));
+    else
+        for i = 1:numel(datasets)
+            fprintf('  [%d] %s\n', i, datasets(i).filePath);
+            fprintf('      均方根误差 = %.6f deg\n', datasets(i).metrics.rmse_deg);
+            fprintf('      平均绝对误差 = %.6f deg\n', datasets(i).metrics.mae_deg);
+            fprintf('      最大绝对误差 = %.6f deg\n', datasets(i).metrics.max_abs_error_deg);
+            fprintf('      上升时间(10%%-90%%) = %s s\n', formatNumericText(datasets(i).responseMetrics.rise_time_s));
+            fprintf('      最大超调时间 = %s s\n', formatNumericText(datasets(i).responseMetrics.peak_time_s));
+            fprintf('      超调量 = %s deg (%s%%)\n', ...
+                formatNumericText(datasets(i).responseMetrics.overshoot_deg), ...
+                formatNumericText(datasets(i).responseMetrics.overshoot_percent));
+            fprintf('      稳定时间(收敛时间) = %s s\n', formatNumericText(datasets(i).responseMetrics.settling_time_s));
+            fprintf('      稳态误差 = %s deg\n', formatNumericText(datasets(i).responseMetrics.steady_state_error_deg));
+            fprintf('      稳态平均绝对误差 = %s deg\n', formatNumericText(datasets(i).responseMetrics.steady_state_abs_error_deg));
+        end
     end
     fprintf('  输出目录: %s\n', cfg.RunOutputRoot);
 end
 
 function cfg = buildConfig(scriptDir, opts, showFigures, saveEpsFigures, ...
     normalizeTimeToZero, unwrapHeading, outputRoot, readMode, delimiter, ...
-    timeColumn, currentHeadingColumn, expectedHeadingColumn)
+    timeColumn, currentHeadingColumn, expectedHeadingColumn, ...
+    settlingBandRatio, settlingBandMinDeg)
 
 cfg = struct();
 cfg.ScriptDir = scriptDir;
@@ -139,6 +163,8 @@ cfg.Delimiter = strtrim(char(string(getOption(opts, 'Delimiter', delimiter))));
 cfg.TimeColumn = getOption(opts, 'TimeColumn', timeColumn);
 cfg.CurrentHeadingColumn = getOption(opts, 'CurrentHeadingColumn', currentHeadingColumn);
 cfg.ExpectedHeadingColumn = getOption(opts, 'ExpectedHeadingColumn', expectedHeadingColumn);
+cfg.SettlingBandRatio = getNumericScalarOption(opts, 'SettlingBandRatio', settlingBandRatio);
+cfg.SettlingBandMinDeg = getNumericScalarOption(opts, 'SettlingBandMinDeg', settlingBandMinDeg);
 cfg.MaxFileCount = 2;
 cfg.LineWidth = 1.4;
 cfg.CurrentColor = [0.10, 0.35, 0.78];
@@ -146,6 +172,10 @@ cfg.ExpectedColor = [0.88, 0.33, 0.12];
 cfg.ErrorColor = [0.14, 0.56, 0.36];
 cfg.SecondRunColor = [0.60, 0.24, 0.68];
 cfg.ReferenceColor = [0.35, 0.35, 0.35];
+cfg.PwmDiffColor = [0.78, 0.22, 0.18];
+cfg.GainKpColor = [0.12, 0.38, 0.78];
+cfg.GainKiColor = [0.86, 0.44, 0.15];
+cfg.GainKdColor = [0.20, 0.62, 0.36];
 cfg.DisplayFontName = getPreferredChineseFontName();
 end
 
@@ -351,6 +381,12 @@ names = normalizeNames(tbl.Properties.VariableNames);
     tbl, names, '', defaultKiColumnCandidates(), false);
 [kdValues, kdColumnName] = extractFlexibleNumericColumn( ...
     tbl, names, '', defaultKdColumnCandidates(), false);
+[leftPwmValues, leftPwmColumnName] = extractFlexibleNumericColumn( ...
+    tbl, names, '', defaultLeftPwmColumnCandidates(), false);
+[rightPwmValues, rightPwmColumnName] = extractFlexibleNumericColumn( ...
+    tbl, names, '', defaultRightPwmColumnCandidates(), false);
+[rawOutputValues, rawOutputColumnName] = extractFlexibleNumericColumn( ...
+    tbl, names, '', defaultRawOutputColumnCandidates(), false);
 
 timeS = ensureColumn(timeS);
 currentHeadingRawDeg = ensureColumn(currentHeadingRawDeg);
@@ -367,6 +403,15 @@ end
 if ~isempty(kdValues)
     kdValues = ensureColumn(kdValues);
 end
+if ~isempty(leftPwmValues)
+    leftPwmValues = ensureColumn(leftPwmValues);
+end
+if ~isempty(rightPwmValues)
+    rightPwmValues = ensureColumn(rightPwmValues);
+end
+if ~isempty(rawOutputValues)
+    rawOutputValues = ensureColumn(rawOutputValues);
+end
 
 validMask = isfinite(timeS) & isfinite(currentHeadingRawDeg) & isfinite(expectedHeadingRawDeg);
 timeS = timeS(validMask);
@@ -376,6 +421,9 @@ loggedHeadingErrorDeg = cropOptional(loggedHeadingErrorDeg, validMask);
 kpValues = cropOptional(kpValues, validMask);
 kiValues = cropOptional(kiValues, validMask);
 kdValues = cropOptional(kdValues, validMask);
+leftPwmValues = cropOptional(leftPwmValues, validMask);
+rightPwmValues = cropOptional(rightPwmValues, validMask);
+rawOutputValues = cropOptional(rawOutputValues, validMask);
 
 if isempty(timeS)
     error('文件中没有可用的时间/航向角有效数据：%s', filePath);
@@ -388,6 +436,9 @@ loggedHeadingErrorDeg = cropOptionalByIndex(loggedHeadingErrorDeg, order);
 kpValues = cropOptionalByIndex(kpValues, order);
 kiValues = cropOptionalByIndex(kiValues, order);
 kdValues = cropOptionalByIndex(kdValues, order);
+leftPwmValues = cropOptionalByIndex(leftPwmValues, order);
+rightPwmValues = cropOptionalByIndex(rightPwmValues, order);
+rawOutputValues = cropOptionalByIndex(rawOutputValues, order);
 
 [timeS, uniqueIdx] = unique(timeS, 'stable');
 currentHeadingRawDeg = currentHeadingRawDeg(uniqueIdx);
@@ -396,6 +447,9 @@ loggedHeadingErrorDeg = cropOptionalByIndex(loggedHeadingErrorDeg, uniqueIdx);
 kpValues = cropOptionalByIndex(kpValues, uniqueIdx);
 kiValues = cropOptionalByIndex(kiValues, uniqueIdx);
 kdValues = cropOptionalByIndex(kdValues, uniqueIdx);
+leftPwmValues = cropOptionalByIndex(leftPwmValues, uniqueIdx);
+rightPwmValues = cropOptionalByIndex(rightPwmValues, uniqueIdx);
+rawOutputValues = cropOptionalByIndex(rawOutputValues, uniqueIdx);
 
 if cfg.NormalizeTimeToZero
     timeS = timeS - timeS(1);
@@ -417,6 +471,9 @@ else
     errorSource = 'expected_minus_current';
 end
 metrics = computeErrorMetrics(headingErrorDeg);
+pwmDiffValues = computePwmDiffValues(leftPwmValues, rightPwmValues);
+trackingErrorDeg = angleDiffDeg(expectedHeadingRawDeg, currentHeadingRawDeg);
+responseMetrics = computeResponseMetrics(timeS, trackingErrorDeg, expectedHeadingRawDeg, cfg);
 
 [~, baseName] = fileparts(filePath);
 controllerType = inferControllerType(filePath);
@@ -435,6 +492,9 @@ data.columns.logged_error = loggedErrorColumnName;
 data.columns.kp = kpColumnName;
 data.columns.ki = kiColumnName;
 data.columns.kd = kdColumnName;
+data.columns.left_thruster_pwm = leftPwmColumnName;
+data.columns.right_thruster_pwm = rightPwmColumnName;
+data.columns.raw_output = rawOutputColumnName;
 data.timeS = timeS;
 data.currentHeadingDeg = currentHeadingDisplayDeg;
 data.expectedHeadingDeg = expectedHeadingDisplayDeg;
@@ -444,7 +504,13 @@ data.headingErrorDeg = headingErrorDeg;
 data.errorSource = errorSource;
 data.controllerType = controllerType;
 data.controllerGains = gains;
+data.gainSeries = struct('kp', kpValues, 'ki', kiValues, 'kd', kdValues);
+data.leftThrusterPwm = leftPwmValues;
+data.rightThrusterPwm = rightPwmValues;
+data.pwmDiff = pwmDiffValues;
+data.rawOutput = rawOutputValues;
 data.metrics = metrics;
+data.responseMetrics = responseMetrics;
 data.sampleCount = numel(timeS);
 data.timeRangeS = [timeS(1), timeS(end)];
 end
@@ -473,39 +539,16 @@ legend(axHeading, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(axHeading, cfg);
 hold(axHeading, 'off');
 
-figError = figure( ...
-    'Name', sprintf('航向角误差 - %s', data.baseName), ...
-    'Color', 'w', ...
-    'Visible', getFigureVisibility(cfg));
-
-axError = axes('Parent', figError);
-hold(axError, 'on');
-errorLegendLabel = getControllerDisplayName(data.controllerType);
-if strcmp(errorLegendLabel, 'unknown')
-    errorLegendLabel = '航向角误差';
-end
-plot(axError, data.timeS, data.headingErrorDeg, '-', ...
-    'Color', cfg.ErrorColor, ...
-    'LineWidth', cfg.LineWidth, ...
-    'DisplayName', errorLegendLabel);
-yline(axError, 0, '--', ...
-    'Color', cfg.ReferenceColor, ...
-    'LineWidth', 1.0, ...
-    'HandleVisibility', 'off');
-applyAxesStyle(axError);
-xlabel(axError, '时间 (s)');
-ylabel(axError, '误差 (deg)');
-applyFigureTitle(axError, '航向角误差曲线', buildControllerAnnotation(data), cfg);
-legend(axError, 'Location', 'best', 'Interpreter', 'none');
-applyChineseTextStyle(axError, cfg);
-hold(axError, 'off');
-
 baseName = sanitizeFileName(data.baseName);
 figureFiles = struct();
 figureFiles.heading = saveFigureBundle(figHeading, ...
     fullfile(cfg.RunOutputRoot, ['heading_tracking_' baseName]), cfg);
-figureFiles.error = saveFigureBundle(figError, ...
-    fullfile(cfg.RunOutputRoot, ['heading_error_' baseName]), cfg);
+if hasPwmDiffSeries(data)
+    figureFiles.pwm_diff = plotSinglePwmDiffFigure(data, cfg);
+end
+if hasGainSeries(data)
+    figureFiles.gains = plotGainSeriesFigure(data, cfg);
+end
 end
 
 function figureFiles = plotDualHeadingFigure(datasets, cfg)
@@ -559,45 +602,112 @@ legend(axHeading, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(axHeading, cfg);
 hold(axHeading, 'off');
 
-figError = figure( ...
-    'Name', '航向角误差对比', ...
-    'Color', 'w', ...
-    'Visible', getFigureVisibility(cfg));
-
-axError = axes('Parent', figError);
-hold(axError, 'on');
-for i = 1:numel(datasets)
-    controllerLabel = getControllerDisplayName(datasets(i).controllerType);
-    plot(axError, datasets(i).timeS, datasets(i).headingErrorDeg, '-', ...
-        'Color', currentColors(i, :), ...
-        'LineWidth', cfg.LineWidth, ...
-        'DisplayName', controllerLabel);
-end
-yline(axError, 0, '--', ...
-    'Color', cfg.ReferenceColor, ...
-    'LineWidth', 1.0, ...
-    'HandleVisibility', 'off');
-applyAxesStyle(axError);
-xlabel(axError, '时间 (s)');
-ylabel(axError, '误差 (deg)');
-applyFigureTitle(axError, '航向角误差对比', buildCompareAnnotation(datasets), cfg);
-legend(axError, 'Location', 'best', 'Interpreter', 'none');
-applyChineseTextStyle(axError, cfg);
-hold(axError, 'off');
-
 compareName = sprintf('%s_vs_%s', ...
     sanitizeFileName(datasets(1).baseName), ...
     sanitizeFileName(datasets(2).baseName));
 figureFiles = struct();
 figureFiles.heading = saveFigureBundle(figHeading, ...
     fullfile(cfg.RunOutputRoot, ['heading_tracking_compare_' compareName]), cfg);
-figureFiles.error = saveFigureBundle(figError, ...
-    fullfile(cfg.RunOutputRoot, ['heading_error_compare_' compareName]), cfg);
+if any(arrayfun(@hasPwmDiffSeries, datasets))
+    figureFiles.pwm_diff = plotDualPwmDiffFigure(datasets, compareName, cfg);
+end
+end
+
+function savedFigure = plotSinglePwmDiffFigure(data, cfg)
+figPwm = figure( ...
+    'Name', sprintf('PWM 差值 - %s', data.baseName), ...
+    'Color', 'w', ...
+    'Visible', getFigureVisibility(cfg));
+
+ax = axes('Parent', figPwm);
+hold(ax, 'on');
+plot(ax, data.timeS, data.pwmDiff, '-', ...
+    'Color', cfg.PwmDiffColor, ...
+    'LineWidth', cfg.LineWidth, ...
+    'DisplayName', 'PWM 差值');
+yline(ax, 0, '--', ...
+    'Color', cfg.ReferenceColor, ...
+    'LineWidth', 1.0, ...
+    'HandleVisibility', 'off');
+applyAxesStyle(ax);
+xlabel(ax, '时间 (s)');
+ylabel(ax, 'PWM 差值 (right-left)');
+applyFigureTitle(ax, 'PWM 差值曲线', buildPwmFigureAnnotation(data), cfg);
+legend(ax, 'Location', 'best', 'Interpreter', 'none');
+applyChineseTextStyle(ax, cfg);
+hold(ax, 'off');
+
+baseName = sanitizeFileName(data.baseName);
+savedFigure = saveFigureBundle(figPwm, ...
+    fullfile(cfg.RunOutputRoot, ['pwm_diff_' baseName]), cfg);
+end
+
+function savedFigure = plotDualPwmDiffFigure(datasets, compareName, cfg)
+figPwm = figure( ...
+    'Name', 'PWM 差值对比', ...
+    'Color', 'w', ...
+    'Visible', getFigureVisibility(cfg));
+
+ax = axes('Parent', figPwm);
+hold(ax, 'on');
+currentColors = [cfg.CurrentColor; cfg.SecondRunColor];
+for i = 1:numel(datasets)
+    if ~hasPwmDiffSeries(datasets(i))
+        continue;
+    end
+
+    plot(ax, datasets(i).timeS, datasets(i).pwmDiff, '-', ...
+        'Color', currentColors(i, :), ...
+        'LineWidth', cfg.LineWidth, ...
+        'DisplayName', getControllerDisplayName(datasets(i).controllerType));
+end
+yline(ax, 0, '--', ...
+    'Color', cfg.ReferenceColor, ...
+    'LineWidth', 1.0, ...
+    'HandleVisibility', 'off');
+applyAxesStyle(ax);
+xlabel(ax, '时间 (s)');
+ylabel(ax, 'PWM 差值 (right-left)');
+applyFigureTitle(ax, 'PWM 差值对比', buildComparePwmAnnotation(datasets), cfg);
+legend(ax, 'Location', 'best', 'Interpreter', 'none');
+applyChineseTextStyle(ax, cfg);
+hold(ax, 'off');
+
+savedFigure = saveFigureBundle(figPwm, ...
+    fullfile(cfg.RunOutputRoot, ['pwm_diff_compare_' compareName]), cfg);
+end
+
+function savedFigure = plotGainSeriesFigure(data, cfg)
+figGains = figure( ...
+    'Name', sprintf('控制增益曲线 - %s', data.baseName), ...
+    'Color', 'w', ...
+    'Visible', getFigureVisibility(cfg));
+
+ax = axes('Parent', figGains);
+annotationText = buildGainFigureAnnotation(data);
+hold(ax, 'on');
+
+plotSingleGainLine(ax, data.timeS, data.gainSeries.kp, 'Kp', cfg.GainKpColor, cfg);
+plotSingleGainLine(ax, data.timeS, data.gainSeries.ki, 'Ki', cfg.GainKiColor, cfg);
+plotSingleGainLine(ax, data.timeS, data.gainSeries.kd, 'Kd', cfg.GainKdColor, cfg);
+
+applyAxesStyle(ax);
+xlabel(ax, '时间 (s)');
+ylabel(ax, '增益值');
+applyFigureTitle(ax, '控制增益随时间变化', annotationText, cfg);
+legend(ax, 'Location', 'best', 'Interpreter', 'none');
+applyChineseTextStyle(ax, cfg);
+hold(ax, 'off');
+
+baseName = sanitizeFileName(data.baseName);
+savedFigure = saveFigureBundle(figGains, ...
+    fullfile(cfg.RunOutputRoot, ['controller_gains_' baseName]), cfg);
 end
 
 function summaryFiles = saveSummaryArtifacts(results, cfg)
 matPath = fullfile(cfg.RunOutputRoot, 'heading_tracking_results.mat');
 txtPath = fullfile(cfg.RunOutputRoot, 'heading_tracking_summary.txt');
+comparisonCsvPath = fullfile(cfg.RunOutputRoot, 'heading_tracking_comparison.csv');
 
 save(matPath, 'results');
 
@@ -614,6 +724,14 @@ fprintf(fid, '搜索根目录: %s\n', results.search_root);
 fprintf(fid, '输出目录: %s\n', results.output_root);
 fprintf(fid, '\n');
 
+if isfield(results, 'comparison_summary') && isstruct(results.comparison_summary) && results.comparison_summary.available
+    fprintf(fid, '航向角对比汇总表\n');
+    fprintf(fid, 'ai_pid 文件: %s\n', results.comparison_summary.ai_pid_path);
+    fprintf(fid, 'pid 文件: %s\n', results.comparison_summary.pid_path);
+    fprintf(fid, '%s\n\n', buildComparisonSummaryText(results.comparison_summary));
+    writeComparisonSummaryCsv(comparisonCsvPath, results.comparison_summary);
+end
+
 for i = 1:numel(results.runs)
     runData = results.runs(i);
     fprintf(fid, '[文件 %d]\n', i);
@@ -627,16 +745,29 @@ for i = 1:numel(results.runs)
     if ~isempty(runData.columns.logged_error)
         fprintf(fid, '日志误差列: %s\n', runData.columns.logged_error);
     end
-    if strcmp(runData.controllerType, 'ordinary_pid')
-        fprintf(fid, 'Kp: %s\n', formatNumericText(runData.controllerGains.kp));
-        fprintf(fid, 'Ki: %s\n', formatNumericText(runData.controllerGains.ki));
-        fprintf(fid, 'Kd: %s\n', formatNumericText(runData.controllerGains.kd));
+    if ~isempty(runData.columns.left_thruster_pwm) && ~isempty(runData.columns.right_thruster_pwm)
+        fprintf(fid, 'PWM 差值定义: %s - %s\n', ...
+            runData.columns.right_thruster_pwm, runData.columns.left_thruster_pwm);
     end
+    if ~isempty(runData.columns.raw_output)
+        fprintf(fid, '原始控制输出列: %s\n', runData.columns.raw_output);
+    end
+    fprintf(fid, 'Kp: %s\n', formatNumericText(runData.controllerGains.kp));
+    fprintf(fid, 'Ki: %s\n', formatNumericText(runData.controllerGains.ki));
+    fprintf(fid, 'Kd: %s\n', formatNumericText(runData.controllerGains.kd));
     fprintf(fid, '时间范围 (s): %.6f -> %.6f\n', runData.timeRangeS(1), runData.timeRangeS(2));
     fprintf(fid, '均方根误差 (deg): %.9f\n', runData.metrics.rmse_deg);
     fprintf(fid, '平均绝对误差 (deg): %.9f\n', runData.metrics.mae_deg);
     fprintf(fid, '平均误差 (deg): %.9f\n', runData.metrics.mean_error_deg);
     fprintf(fid, '最大绝对误差 (deg): %.9f\n', runData.metrics.max_abs_error_deg);
+    fprintf(fid, '上升时间 10%%->90%% (s): %s\n', formatNumericText(runData.responseMetrics.rise_time_s));
+    fprintf(fid, '最大超调时间 (s): %s\n', formatNumericText(runData.responseMetrics.peak_time_s));
+    fprintf(fid, '超调量 (deg): %s\n', formatNumericText(runData.responseMetrics.overshoot_deg));
+    fprintf(fid, '超调量 (%%): %s\n', formatNumericText(runData.responseMetrics.overshoot_percent));
+    fprintf(fid, '稳定时间/收敛时间 (s): %s\n', formatNumericText(runData.responseMetrics.settling_time_s));
+    fprintf(fid, '稳定误差带 (deg): %s\n', formatNumericText(runData.responseMetrics.settling_band_deg));
+    fprintf(fid, '稳态误差 (deg): %s\n', formatNumericText(runData.responseMetrics.steady_state_error_deg));
+    fprintf(fid, '稳态平均绝对误差 (deg): %s\n', formatNumericText(runData.responseMetrics.steady_state_abs_error_deg));
     fprintf(fid, '\n');
 end
 
@@ -645,6 +776,174 @@ writeFigureFiles(fid, results.figure_files, '');
 summaryFiles = struct();
 summaryFiles.mat = matPath;
 summaryFiles.txt = txtPath;
+if isfield(results, 'comparison_summary') && isstruct(results.comparison_summary) && results.comparison_summary.available
+    summaryFiles.comparison_csv = comparisonCsvPath;
+else
+    summaryFiles.comparison_csv = '';
+end
+end
+
+function comparisonSummary = buildComparisonSummary(datasets)
+comparisonSummary = struct();
+comparisonSummary.available = false;
+comparisonSummary.ai_pid_index = [];
+comparisonSummary.pid_index = [];
+comparisonSummary.ai_pid_path = '';
+comparisonSummary.pid_path = '';
+comparisonSummary.note = '';
+comparisonSummary.rows = struct([]);
+comparisonSummary.table = table();
+
+if numel(datasets) ~= 2
+    return;
+end
+
+controllerTypes = {datasets.controllerType};
+aiPidIdx = find(strcmp(controllerTypes, 'ai_pid'), 1, 'first');
+pidIdx = find(strcmp(controllerTypes, 'ordinary_pid'), 1, 'first');
+if isempty(aiPidIdx) || isempty(pidIdx)
+    return;
+end
+
+specs = getComparisonMetricSpecs();
+rowTemplate = struct( ...
+    'metric', '', ...
+    'unit', '', ...
+    'ai_pid_value', NaN, ...
+    'pid_value', NaN, ...
+    'advantage_value', NaN, ...
+    'ai_pid_text', '', ...
+    'pid_text', '', ...
+    'advantage_text', '');
+rows = repmat(rowTemplate, numel(specs), 1);
+
+for i = 1:numel(specs)
+    aiPidValue = extractComparisonMetricValue(datasets(aiPidIdx), specs(i).key);
+    pidValue = extractComparisonMetricValue(datasets(pidIdx), specs(i).key);
+    advantageValue = computeAiPidAdvantage(specs(i).key, aiPidValue, pidValue);
+
+    rows(i).metric = specs(i).label;
+    rows(i).unit = specs(i).unit;
+    rows(i).ai_pid_value = aiPidValue;
+    rows(i).pid_value = pidValue;
+    rows(i).advantage_value = advantageValue;
+    rows(i).ai_pid_text = formatComparisonValue(aiPidValue);
+    rows(i).pid_text = formatComparisonValue(pidValue);
+    rows(i).advantage_text = formatComparisonValue(advantageValue);
+end
+
+comparisonSummary.available = true;
+comparisonSummary.ai_pid_index = aiPidIdx;
+comparisonSummary.pid_index = pidIdx;
+comparisonSummary.ai_pid_path = datasets(aiPidIdx).filePath;
+comparisonSummary.pid_path = datasets(pidIdx).filePath;
+comparisonSummary.note = ['除“稳态误差”外，改善量按数值越小越好计算，即 pid - ai_pid；' ...
+    '“稳态误差”按更接近 0 更好计算，即 abs(pid) - abs(ai_pid)。'];
+comparisonSummary.rows = rows;
+comparisonSummary.table = table( ...
+    string({rows.metric}).', ...
+    string({rows.unit}).', ...
+    [rows.ai_pid_value].', ...
+    [rows.pid_value].', ...
+    [rows.advantage_value].', ...
+    'VariableNames', {'Metric', 'Unit', 'AiPid', 'Pid', 'AiPidAdvantage'});
+end
+
+function specs = getComparisonMetricSpecs()
+specs = [ ...
+    struct('key', 'rmse_deg', 'label', '均方根误差', 'unit', 'deg'); ...
+    struct('key', 'mae_deg', 'label', '平均绝对误差', 'unit', 'deg'); ...
+    struct('key', 'max_abs_error_deg', 'label', '最大绝对误差', 'unit', 'deg'); ...
+    struct('key', 'rise_time_s', 'label', '上升时间(10%-90%)', 'unit', 's'); ...
+    struct('key', 'peak_time_s', 'label', '最大超调时间', 'unit', 's'); ...
+    struct('key', 'overshoot_deg', 'label', '超调量', 'unit', 'deg'); ...
+    struct('key', 'overshoot_percent', 'label', '超调百分比', 'unit', '%'); ...
+    struct('key', 'settling_time_s', 'label', '稳定时间(收敛时间)', 'unit', 's'); ...
+    struct('key', 'steady_state_error_deg', 'label', '稳态误差', 'unit', 'deg'); ...
+    struct('key', 'steady_state_abs_error_deg', 'label', '稳态平均绝对误差', 'unit', 'deg')];
+end
+
+function value = extractComparisonMetricValue(runData, metricKey)
+switch metricKey
+    case 'rmse_deg'
+        value = runData.metrics.rmse_deg;
+    case 'mae_deg'
+        value = runData.metrics.mae_deg;
+    case 'max_abs_error_deg'
+        value = runData.metrics.max_abs_error_deg;
+    case 'rise_time_s'
+        value = runData.responseMetrics.rise_time_s;
+    case 'peak_time_s'
+        value = runData.responseMetrics.peak_time_s;
+    case 'overshoot_deg'
+        value = runData.responseMetrics.overshoot_deg;
+    case 'overshoot_percent'
+        value = runData.responseMetrics.overshoot_percent;
+    case 'settling_time_s'
+        value = runData.responseMetrics.settling_time_s;
+    case 'steady_state_error_deg'
+        value = runData.responseMetrics.steady_state_error_deg;
+    case 'steady_state_abs_error_deg'
+        value = runData.responseMetrics.steady_state_abs_error_deg;
+    otherwise
+        error('未知的对比指标键：%s', metricKey);
+end
+end
+
+function value = computeAiPidAdvantage(metricKey, aiPidValue, pidValue)
+if ~(isnumeric(aiPidValue) && isscalar(aiPidValue) && isfinite(aiPidValue) && ...
+        isnumeric(pidValue) && isscalar(pidValue) && isfinite(pidValue))
+    value = NaN;
+    return;
+end
+
+switch metricKey
+    case 'steady_state_error_deg'
+        value = abs(pidValue) - abs(aiPidValue);
+    otherwise
+        value = pidValue - aiPidValue;
+end
+end
+
+function textValue = formatComparisonValue(value)
+if isnumeric(value) && isscalar(value) && isfinite(value)
+    textValue = sprintf('%.6f', value);
+else
+    textValue = 'N/A';
+end
+end
+
+function textOut = buildComparisonSummaryText(comparisonSummary)
+if ~isfield(comparisonSummary, 'available') || ~comparisonSummary.available || isempty(comparisonSummary.rows)
+    textOut = '';
+    return;
+end
+
+lines = cell(numel(comparisonSummary.rows) + 2, 1);
+lines{1} = '指标	单位	ai_pid	pid	ai_pid相比pid改善量(正为更好)';
+for i = 1:numel(comparisonSummary.rows)
+    row = comparisonSummary.rows(i);
+    lines{i + 1} = sprintf('%s\t%s\t%s\t%s\t%s', ...
+        row.metric, row.unit, row.ai_pid_text, row.pid_text, row.advantage_text);
+end
+lines{end} = ['注：' comparisonSummary.note];
+textOut = strjoin(lines, newline);
+end
+
+function writeComparisonSummaryCsv(csvPath, comparisonSummary)
+fid = fopen(csvPath, 'w');
+if fid == -1
+    error('无法写入对比汇总 CSV：%s', csvPath);
+end
+
+cleanupObj = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+fprintf(fid, '指标,单位,ai_pid,pid,ai_pid相比pid改善量_正为更好\n');
+for i = 1:numel(comparisonSummary.rows)
+    row = comparisonSummary.rows(i);
+    fprintf(fid, '%s,%s,%s,%s,%s\n', ...
+        row.metric, row.unit, row.ai_pid_text, row.pid_text, row.advantage_text);
+end
 end
 
 function writeFigureFiles(fid, figureFiles, prefix)
@@ -733,6 +1032,103 @@ metrics.mean_error_deg = mean(errorDeg);
 metrics.max_abs_error_deg = max(abs(errorDeg));
 end
 
+function pwmDiffValues = computePwmDiffValues(leftPwmValues, rightPwmValues)
+if isempty(leftPwmValues) || isempty(rightPwmValues)
+    pwmDiffValues = [];
+    return;
+end
+
+pwmDiffValues = rightPwmValues - leftPwmValues;
+end
+
+function responseMetrics = computeResponseMetrics(timeS, trackingErrorDeg, expectedHeadingRawDeg, cfg)
+responseMetrics = struct( ...
+    'initial_error_deg', NaN, ...
+    'step_amplitude_deg', NaN, ...
+    'target_span_deg', NaN, ...
+    'rise_time_s', NaN, ...
+    'overshoot_deg', NaN, ...
+    'overshoot_percent', NaN, ...
+    'peak_time_s', NaN, ...
+    'settling_time_s', NaN, ...
+    'settling_band_deg', NaN, ...
+    'steady_state_error_deg', NaN, ...
+    'steady_state_abs_error_deg', NaN);
+
+if isempty(timeS) || isempty(trackingErrorDeg)
+    return;
+end
+
+validMask = isfinite(timeS) & isfinite(trackingErrorDeg);
+if nargin >= 3 && ~isempty(expectedHeadingRawDeg)
+    validMask = validMask & isfinite(expectedHeadingRawDeg);
+end
+
+timeS = timeS(validMask);
+trackingErrorDeg = trackingErrorDeg(validMask);
+expectedHeadingRawDeg = expectedHeadingRawDeg(validMask);
+if isempty(timeS)
+    return;
+end
+
+initialErrorDeg = trackingErrorDeg(1);
+stepAmplitudeDeg = abs(initialErrorDeg);
+responseMetrics.initial_error_deg = initialErrorDeg;
+responseMetrics.step_amplitude_deg = stepAmplitudeDeg;
+if ~isempty(expectedHeadingRawDeg)
+    responseMetrics.target_span_deg = max(expectedHeadingRawDeg) - min(expectedHeadingRawDeg);
+end
+
+if ~(isfinite(stepAmplitudeDeg) && stepAmplitudeDeg > eps)
+    return;
+end
+
+direction = sign(initialErrorDeg);
+if direction == 0
+    return;
+end
+
+absErrorDeg = abs(trackingErrorDeg);
+riseStartIdx = find(absErrorDeg <= 0.90 * stepAmplitudeDeg, 1, 'first');
+riseEndIdx = find(absErrorDeg <= 0.10 * stepAmplitudeDeg, 1, 'first');
+if ~isempty(riseStartIdx) && ~isempty(riseEndIdx) && riseEndIdx >= riseStartIdx
+    responseMetrics.rise_time_s = timeS(riseEndIdx) - timeS(riseStartIdx);
+end
+
+overshootSeries = max(0, -direction * trackingErrorDeg);
+[overshootDeg, peakIndex] = max(overshootSeries);
+responseMetrics.overshoot_deg = overshootDeg;
+if isfinite(overshootDeg) && overshootDeg > 0
+    responseMetrics.peak_time_s = timeS(peakIndex);
+    responseMetrics.overshoot_percent = overshootDeg / stepAmplitudeDeg * 100;
+end
+
+settlingBandDeg = max(cfg.SettlingBandMinDeg, cfg.SettlingBandRatio * stepAmplitudeDeg);
+responseMetrics.settling_band_deg = settlingBandDeg;
+insideBand = abs(trackingErrorDeg) <= settlingBandDeg;
+lastOutsideIdx = find(~insideBand, 1, 'last');
+if isempty(lastOutsideIdx)
+    responseMetrics.settling_time_s = timeS(1);
+elseif lastOutsideIdx < numel(timeS)
+    responseMetrics.settling_time_s = timeS(lastOutsideIdx + 1);
+end
+
+steadyStateStartIdx = [];
+if isfinite(responseMetrics.settling_time_s)
+    steadyStateStartIdx = find(timeS >= responseMetrics.settling_time_s, 1, 'first');
+end
+if isempty(steadyStateStartIdx)
+    steadyStateStartIdx = max(1, ceil(0.9 * numel(timeS)));
+end
+
+steadyStateErrorDeg = trackingErrorDeg(steadyStateStartIdx:end);
+steadyStateErrorDeg = steadyStateErrorDeg(isfinite(steadyStateErrorDeg));
+if ~isempty(steadyStateErrorDeg)
+    responseMetrics.steady_state_error_deg = mean(steadyStateErrorDeg);
+    responseMetrics.steady_state_abs_error_deg = mean(abs(steadyStateErrorDeg));
+end
+end
+
 function valuesOut = tableColumnToNumeric(valuesIn)
 if iscell(valuesIn)
     valuesOut = str2double(valuesIn);
@@ -786,6 +1182,20 @@ else
 end
 end
 
+function axesList = createStackedAxes(fig, axisCount)
+axesList = gobjects(axisCount, 1);
+if exist('tiledlayout', 'file') == 2 || exist('tiledlayout', 'builtin') == 5
+    layout = tiledlayout(fig, axisCount, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
+    for i = 1:axisCount
+        axesList(i) = nexttile(layout);
+    end
+else
+    for i = 1:axisCount
+        axesList(i) = subplot(axisCount, 1, i, 'Parent', fig);
+    end
+end
+end
+
 function applyAxesStyle(ax)
 grid(ax, 'on');
 box(ax, 'on');
@@ -807,7 +1217,10 @@ if ~isempty(ax.YLabel) && isgraphics(ax.YLabel)
     set(ax.YLabel, 'FontName', fontName);
 end
 
-legendHandle = legend(ax);
+legendHandle = [];
+if isprop(ax, 'Legend')
+    legendHandle = ax.Legend;
+end
 if ~isempty(legendHandle) && isgraphics(legendHandle)
     set(legendHandle, 'FontName', fontName);
     set(legendHandle, 'Interpreter', 'none');
@@ -860,6 +1273,42 @@ if isempty(parts)
 else
     annotationText = char(strjoin(parts, ' | '));
 end
+end
+
+function annotationText = buildPwmFigureAnnotation(data)
+parts = strings(0, 1);
+if ~isempty(data.columns.left_thruster_pwm) && ~isempty(data.columns.right_thruster_pwm)
+    parts(end + 1, 1) = "PWM 差值 = " + string(data.columns.right_thruster_pwm) + ...
+        " - " + string(data.columns.left_thruster_pwm); %#ok<AGROW>
+end
+if ~isempty(data.columns.raw_output)
+    parts(end + 1, 1) = "raw output 列: " + string(data.columns.raw_output); %#ok<AGROW>
+end
+
+if isempty(parts)
+    annotationText = '';
+else
+    annotationText = char(strjoin(parts, ' | '));
+end
+end
+
+function annotationText = buildComparePwmAnnotation(datasets)
+annotationText = '';
+end
+
+function annotationText = buildGainFigureAnnotation(data)
+annotationText = '';
+end
+
+function plotSingleGainLine(ax, timeS, values, gainLabel, colorValue, cfg)
+if ~hasFiniteSeries(values)
+    return;
+end
+
+plot(ax, timeS, values, '-', ...
+    'Color', colorValue, ...
+    'LineWidth', cfg.LineWidth, ...
+    'DisplayName', gainLabel);
 end
 
 function fieldName = buildSingleFigureFieldName(data, indexValue, usedFieldNames)
@@ -915,6 +1364,25 @@ if isempty(values)
 end
 
 value = values(end);
+end
+
+function tf = hasGainSeries(data)
+tf = false;
+if ~isfield(data, 'gainSeries')
+    return;
+end
+
+tf = hasFiniteSeries(data.gainSeries.kp) || ...
+    hasFiniteSeries(data.gainSeries.ki) || ...
+    hasFiniteSeries(data.gainSeries.kd);
+end
+
+function tf = hasFiniteSeries(values)
+tf = ~isempty(values) && any(isfinite(values));
+end
+
+function tf = hasPwmDiffSeries(data)
+tf = isfield(data, 'pwmDiff') && hasFiniteSeries(data.pwmDiff);
 end
 
 function displayName = getControllerDisplayName(controllerType)
@@ -1202,6 +1670,13 @@ else
 end
 end
 
+function value = getNumericScalarOption(opts, fieldName, defaultValue)
+value = getOption(opts, fieldName, defaultValue);
+if ~(isnumeric(value) && isscalar(value) && isfinite(value))
+    error('%s 必须是有限数值标量。', fieldName);
+end
+end
+
 function pathValue = getPathOption(opts, fieldName, defaultValue, fallbackValue)
 pathValue = getOption(opts, fieldName, fallbackValue);
 if isempty(pathValue)
@@ -1234,6 +1709,8 @@ end
 
 function candidates = defaultTimeColumnCandidates()
 candidates = { ...
+    'phase_elapsed_sec', ...
+    'phase_elapsed_s', ...
     'elapsed_time_s', ...
     'elapsed_time', ...
     'elapsed_time_sec', ...
@@ -1295,6 +1772,7 @@ end
 
 function candidates = defaultErrorColumnCandidates()
 candidates = { ...
+    'angle_err_deg', ...
     'angle_error_deg', ...
     'heading_error_deg', ...
     'yaw_error_deg', ...
@@ -1311,6 +1789,18 @@ end
 
 function candidates = defaultKdColumnCandidates()
 candidates = {'angle_kd', 'kd', 'heading_kd', 'yaw_kd'};
+end
+
+function candidates = defaultLeftPwmColumnCandidates()
+candidates = {'left_thruster_pwm', 'left_pwm', 'port_thruster_pwm', 'port_pwm'};
+end
+
+function candidates = defaultRightPwmColumnCandidates()
+candidates = {'right_thruster_pwm', 'right_pwm', 'starboard_thruster_pwm', 'starboard_pwm'};
+end
+
+function candidates = defaultRawOutputColumnCandidates()
+candidates = {'raw_output', 'controller_output', 'control_output', 'pwm_diff_cmd', 'tau2_cmd'};
 end
 
 function timestampText = extractTimestampText(filePath)

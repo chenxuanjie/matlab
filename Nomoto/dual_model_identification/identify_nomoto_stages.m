@@ -16,13 +16,13 @@ useRateFilter = true;
 showFigures = true;
 %
 % 是否额外保存 EPS 矢量图
-saveEpsFigures = true;
+saveEpsFigures = false;
 %
 % 输出目录。留空表示使用脚本同目录下的 results 文件夹
 outputRoot = '';
 %
 % 直行修正所需的半 PWM 差值，逆时针为正
-uTrim = 0;
+uTrim = 4;
 %
 % 角速度移动平均滤波窗口长度。越大越平滑，但边沿会更钝
 rateFilterWindow = 7;
@@ -39,6 +39,10 @@ stage1ResidualTolSigma = 3.0;
 stage1SteadyMinSamples = 20;
 stage1TailFraction = 0.30;
 stage1TailMinSamples = 30;
+%
+% stage1 正转/反转角速度图显示尺寸（像素）
+stage1RateFigureWidth = 1280;
+stage1RateFigureHeight = 420;
 %
 % 有效输入阈值与导数边界裁剪样本数
 minInputAbs = 1.0;
@@ -84,6 +88,8 @@ if nargin < 2 || isempty(opts)
     opts.Stage1SteadyMinSamples = stage1SteadyMinSamples;
     opts.Stage1TailFraction = stage1TailFraction;
     opts.Stage1TailMinSamples = stage1TailMinSamples;
+    opts.Stage1RateFigureWidth = stage1RateFigureWidth;
+    opts.Stage1RateFigureHeight = stage1RateFigureHeight;
     opts.UTrim = uTrim;
     opts.MinInputAbs = minInputAbs;
     opts.DerivativeTrimSamples = derivativeTrimSamples;
@@ -347,6 +353,10 @@ cfg.Stage1ResidualTolSigma = getOption(opts, 'Stage1ResidualTolSigma', 3.0);
 cfg.Stage1SteadyMinSamples = max(5, round(getOption(opts, 'Stage1SteadyMinSamples', 20)));
 cfg.Stage1TailFraction = getOption(opts, 'Stage1TailFraction', 0.30);
 cfg.Stage1TailMinSamples = max(10, round(getOption(opts, 'Stage1TailMinSamples', 30)));
+cfg.Stage1DisplayDataMaxSec = getOption(opts, 'Stage1DisplayDataMaxSec', 28.0);
+cfg.Stage1DisplayAxisMaxSec = getOption(opts, 'Stage1DisplayAxisMaxSec', 30.0);
+cfg.Stage1RateFigureWidth = max(640, round(getOption(opts, 'Stage1RateFigureWidth', 1280)));
+cfg.Stage1RateFigureHeight = max(320, round(getOption(opts, 'Stage1RateFigureHeight', 420)));
 cfg.UTrim = getOption(opts, 'UTrim', 0.0);
 % 常改 7：有效输入阈值与导数边界裁剪。
 cfg.MinInputAbs = getOption(opts, 'MinInputAbs', 1.0);
@@ -1035,30 +1045,37 @@ stageResult.residual_threshold_neg_deg_s = rad2deg(tailNeg.residualTol);
 stageResult.residual_removed_count_pos = tailPos.residualRemovedCount;
 stageResult.residual_removed_count_neg = tailNeg.residualRemovedCount;
 
-figPos = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-正向定常回转 K+ 辨识');
-hMeasured = plotDiscreteSeries(dataPos.timeS, dataPos.yawRateDegS, style.measuredColor);
+[timeDisplayPos, maskDisplayPos] = buildStage1DisplayWindow(dataPos.timeS, cfg);
+[timeDisplayNeg, maskDisplayNeg] = buildStage1DisplayWindow(dataNeg.timeS, cfg);
+
+figPos = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '正转角速度随时间变化图');
+setStage1RateFigureSize(figPos, cfg);
+hMeasured = plotDiscreteSeries(timeDisplayPos, dataPos.yawRateDegS(maskDisplayPos), style.measuredColor);
 hold on;
-hFiltered = plot(dataPos.timeS, rad2deg(dataPos.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+hFiltered = plot(timeDisplayPos, rad2deg(dataPos.yawRateRadSFiltered(maskDisplayPos)), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
 hStart = xline(tailPos.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
 hCenter = yline(rad2deg(tailPos.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
+xlim([0, cfg.Stage1DisplayAxisMaxSec]);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('正向稳态范围筛选，K+ = %.6g', KPos));
+title('正转角速度随时间变化图');
 legend([hMeasured, hFiltered, hStart, hCenter], ...
     {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
 
-figNeg = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '阶段1-反向定常回转 K- 辨识');
-hMeasured = plotDiscreteSeries(dataNeg.timeS, dataNeg.yawRateDegS, style.measuredColor);
+figNeg = figure('Visible', figureVisibility(cfg), 'Color', 'w', 'Name', '反转角速度随时间变化图');
+setStage1RateFigureSize(figNeg, cfg);
+hMeasured = plotDiscreteSeries(timeDisplayNeg, dataNeg.yawRateDegS(maskDisplayNeg), style.measuredColor);
 hold on;
-hFiltered = plot(dataNeg.timeS, rad2deg(dataNeg.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
+hFiltered = plot(timeDisplayNeg, rad2deg(dataNeg.yawRateRadSFiltered(maskDisplayNeg)), '-', 'Color', style.fitColor, 'LineWidth', 1.1);
 hStart = xline(tailNeg.startTime, '--', 'Color', style.referenceColor, 'LineWidth', 1.0, 'DisplayName', '进入稳态起点');
 hCenter = yline(rad2deg(tailNeg.rRef), '--', 'Color', style.inputColor, 'LineWidth', 1.0, 'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
+xlim([0, cfg.Stage1DisplayAxisMaxSec]);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('反向稳态范围筛选，K- = %.6g', KNeg));
+title('反转角速度随时间变化图');
 legend([hMeasured, hFiltered, hStart, hCenter], ...
     {'实测值', '处理值', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
@@ -2204,6 +2221,26 @@ end
 function h = plotDiscreteSeries(x, y, colorSpec)
 h = scatter(x, y, 18, colorSpec, 'filled', ...
     'MarkerEdgeColor', [1, 1, 1], 'LineWidth', 0.45);
+end
+
+function [timeDisplay, displayMask] = buildStage1DisplayWindow(timeS, cfg)
+timeS = columnVector(timeS);
+displayMask = isfinite(timeS) & (timeS <= cfg.Stage1DisplayDataMaxSec);
+if ~any(displayMask)
+    displayMask = isfinite(timeS);
+end
+timeDisplay = timeS(displayMask);
+end
+
+function setStage1RateFigureSize(fig, cfg)
+if ~ishandle(fig)
+    return;
+end
+set(fig, 'Units', 'pixels');
+pos = get(fig, 'Position');
+pos(3) = cfg.Stage1RateFigureWidth;
+pos(4) = cfg.Stage1RateFigureHeight;
+set(fig, 'Position', pos);
 end
 
 function saved = saveFigureBundle(fig, basePath, cfg)
