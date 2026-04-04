@@ -275,18 +275,6 @@ for i = 1:numUniquePwms
     end
 end
 
-if ~isempty(segmentTileLayout)
-    title(segmentTileLayout, '各 PWM 的速度-时间子图');
-elseif exist('sgtitle', 'file') == 2 || exist('sgtitle', 'builtin') == 5
-    sgtitle('各 PWM 的速度-时间子图');
-else
-    annotation('textbox', [0 0.96 1 0.03], ...
-        'String', '各 PWM 的速度-时间子图', ...
-        'EdgeColor', 'none', ...
-        'HorizontalAlignment', 'center', ...
-        'FontWeight', 'bold');
-end
-
 [steadyPwm, steadySpeed, steadyInfo] = computeSteadyStateByTailMean( ...
     segments, steadyStateFraction, minSteadyPoints);
 
@@ -326,12 +314,8 @@ if numUniqueFitPwms >= fitDegree + 1
     rSquared = computeWeightedRSquared(fitSpeedData, yPred, fitWeights);
     fitText = polynomialToString(fitCoeff, fitVariableSymbol);
 
-    title({ ...
-        '稳态 PWM-Speed 特性曲线' ...
-        });
 else
     warning('唯一 PWM 数量不足，无法进行 %d 阶加权拟合。', fitDegree);
-    title('稳态 PWM-Speed 特性曲线（唯一 PWM 点不足，未进行拟合）');
 end
 
 xlabel('PWM');
@@ -743,7 +727,6 @@ function drawPwmSegmentAxes(ax, currentSegments, currentPwm, segmentPlotCfg, sho
         ylim(ax, segmentPlotCfg.segmentYLimits);
     end
 
-    title(ax, sprintf('PWM = %.0f', currentPwm));
     hold(ax, 'off');
 end
 

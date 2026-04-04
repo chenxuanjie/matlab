@@ -675,14 +675,12 @@ plotDiscreteSeries(data.timeS, data.headingRelDeg, style.headingColor);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
-title(sprintf('阶段%d 航向角随时间变化', data.stageId));
 
 nexttile;
 plot(data.timeS, data.uPwm, 'Color', style.inputColor, 'LineWidth', cfg.LineWidth);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('半 PWM 差值');
-title('半 PWM 差值随时间变化');
 
 nexttile;
 plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
@@ -691,7 +689,6 @@ plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title('角速度随时间变化');
 legend({'实测值', '滤波值'}, 'Location', 'best');
 hold off;
 
@@ -705,7 +702,6 @@ else
 end
 applyAxesStyle(style);
 xlabel('时间 (s)');
-title('线速度随时间变化');
 
 overviewFiles.overview = saveFigureBundle(fig, fullfile(stageFolder, sprintf('stage%d_overview', data.stageId)), cfg);
 overviewFiles.yaw_accel = struct('eps', '', 'fig', '');
@@ -721,7 +717,6 @@ if all(isfinite(data.longitude)) && all(isfinite(data.latitude))
     axis equal;
     xlabel('经度 (°E)');
     ylabel('纬度 (°N)');
-    title(sprintf('阶段%d 经纬度散点图', data.stageId));
     c = colorbar;
     ylabel(c, '时间 (s)');
     legend({'轨迹', '起点', '终点'}, 'Location', 'best');
@@ -779,7 +774,6 @@ hCenter = yline(rad2deg(steadyInfo.rRef), '--', 'Color', style.inputColor, 'Line
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段1 稳态范围筛选，K = %.6g', K));
 legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
     {'实测值', '滤波值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
@@ -792,7 +786,6 @@ hFitLine = plot(xFit, rad2deg(K * xFit), '-', 'Color', style.fitColor, 'LineWidt
 applyAxesStyle(style);
 xlabel('修正后半 PWM 差值');
 ylabel('角速度 (deg/s)');
-title('阶段1 稳态样本与最小二乘拟合');
 legend([hFitPoints, hFitLine], {'筛选样本', 'r = K (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
@@ -1023,7 +1016,6 @@ plot(xLine, yLine, '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
 xlabel('角速度导数 dr/dt (deg/s^2)');
 ylabel('K(u-u_{trim}) - r (deg/s)');
-title(sprintf('阶段2 最小二乘拟合 T，斜率 = %.6g s', T));
 legend({'有效样本', '最小二乘拟合'}, 'Location', 'best');
 hold off;
 stageResult.lsq_figure = saveFigureBundle(figLsq, fullfile(stageFolder, 'stage2_least_squares_fit'), cfg);
@@ -1038,7 +1030,6 @@ plot(data.timeS, rad2deg(rModel), '-', 'Color', style.fitColor, 'LineWidth', 1.2
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段2 线性模型 T 辨识结果，K = %.6g，T = %.6g', params.K, T));
 legend({'实测值', '线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1049,7 +1040,6 @@ plot(data.timeS, headingModelDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.2
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
-title('阶段2 线性模型航向角拟合对比');
 legend({'实测值', '线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1126,7 +1116,6 @@ plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title('阶段3 原始离散点与滤波后曲线对比');
 legend({'原始离散点', '滤波后曲线'}, 'Location', 'best');
 hold off;
 stageResult.filter_comparison_figure = saveFigureBundle(figFilter, fullfile(stageFolder, 'stage3_filter_comparison'), cfg);
@@ -1141,8 +1130,6 @@ plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth',
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title(sprintf('阶段3 alpha 辨识结果，K = %.6g，T = %.6g，alpha = %.6g', ...
-    params.K, params.T, alpha));
 legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1153,7 +1140,6 @@ plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth',
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
-title('阶段3 航向角对比');
 legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1199,7 +1185,6 @@ applyAxesStyle(style);
 expandYAxis([rad2deg(data.yawRateRadSFiltered); rad2deg(rNonlinear)], 0.18);
 xlabel('时间 (s)');
 ylabel('角速度 (deg/s)');
-title('阶段4 角速度验证');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1211,7 +1196,6 @@ applyAxesStyle(style);
 expandYAxis([data.headingRelDeg; headingNonlinearDeg], 0.18);
 xlabel('时间 (s)');
 ylabel('航向角 (deg)');
-title('阶段4 航向角验证');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1228,7 +1212,6 @@ yline(0, '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
 applyAxesStyle(style);
 xlabel('时间 (s)');
 ylabel('航向角误差 (deg)');
-title(sprintf('阶段4 航向角误差，RMSE = %.3f deg', stageResult.heading_rmse_deg));
 legend({'实测-模型误差', '零误差参考线'}, 'Location', 'best');
 hold off;
 

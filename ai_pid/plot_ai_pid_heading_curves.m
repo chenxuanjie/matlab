@@ -1228,18 +1228,9 @@ end
 end
 
 function applyFigureTitle(ax, mainTitle, annotationText, cfg)
+% 按论文要求，图内不显示任何文字标题。
 if nargin < 4
-    cfg = struct();
-end
-
-if nargin < 3 || isempty(annotationText)
-    titleHandle = title(ax, mainTitle, 'Interpreter', 'none');
-else
-    titleHandle = title(ax, {mainTitle; annotationText}, 'Interpreter', 'none');
-end
-
-if isfield(cfg, 'DisplayFontName') && ~isempty(cfg.DisplayFontName) && isgraphics(titleHandle)
-    set(titleHandle, 'FontName', cfg.DisplayFontName);
+    cfg = struct(); %#ok<NASGU>
 end
 end
 

@@ -280,10 +280,8 @@ grid on;
 xlabel('时间 (s)');
 ylabel(['艏摇角速度 (' yawRateDisplayUnit ')']);
 if strcmp(modelMode, 'dual')
-    title('双模型艏摇角速度响应');
     legend('Location', 'best');
 else
-    title('艏摇角速度响应');
 end
 hold off;
 
@@ -297,10 +295,8 @@ grid on;
 xlabel('时间 (s)');
 ylabel(['航向角 (' angleDisplayUnit ')']);
 if strcmp(modelMode, 'dual')
-    title('双模型航向角变化（包角显示）');
     legend('Location', 'best');
 else
-    title('航向角变化（包角显示）');
 end
 hold off;
 
@@ -334,7 +330,6 @@ if ~strcmp(modelMode, 'dual')
         end
     end
 
-    title('非线性 Nomoto 模型二维轨迹');
     grid on;
     axis equal;
     xlim(xLimitsWithPadding);
@@ -394,9 +389,7 @@ end
 xlabel('X 位置 (m)');
 ylabel('Y 位置 (m)');
 if strcmp(modelMode, 'dual')
-    title('双模型二维轨迹与回转圆');
 else
-    title('轨迹与航向方向采样');
 end
 legend('Location', 'best');
 hold off;
@@ -410,7 +403,6 @@ if enableAnimation
     hold on;
     xlabel('X 位置 (m)');
     ylabel('Y 位置 (m)');
-    title('二维轨迹动画');
     xlim(xLimitsWithPadding);
     ylim(yLimitsWithPadding);
 

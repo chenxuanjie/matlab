@@ -960,7 +960,6 @@ function plotControllerOutputFigure(runs, lineWidth, referenceLineColor)
         applyThesisAxesStyle();
         xlabel('Time (s)');
         ylabel('PWM diff');
-        title('控制器输出随时间变化');
         legend('Location', 'best', 'Interpreter', 'none');
         hold off;
         return;
@@ -1000,7 +999,6 @@ function plotControllerOutputFigure(runs, lineWidth, referenceLineColor)
         'HandleVisibility', 'off');
     applyThesisAxesStyle();
     ylabel(ax1, 'Command / PWM diff');
-    title(ax1, sprintf('控制器输出随时间变化: %s', run.fileLabel), 'Interpreter', 'none');
     legend(ax1, 'Location', 'best');
     hold(ax1, 'off');
 
@@ -1051,7 +1049,6 @@ function plotYawRateTimeFigure(runs, lineWidth, markerSize, referenceLineColor)
         applyThesisAxesStyle();
         xlabel('Time (s)');
         ylabel('Yaw Rate (deg/s)');
-        title(sprintf('角速度随时间变化: %s', runs(1).fileLabel), 'Interpreter', 'none');
         legend('Location', 'best');
         hold off;
         return;
@@ -1090,13 +1087,11 @@ function plotYawRateTimeFigure(runs, lineWidth, markerSize, referenceLineColor)
         applyThesisAxesStyle();
         xlabel('Time (s)');
         ylabel('Yaw Rate (deg/s)');
-        title(runs(i).fileLabel, 'Interpreter', 'none');
         legend('Location', 'best');
         hold off;
     end
 
     if ~isempty(tileLayout)
-        title(tileLayout, '角速度随时间变化');
     end
 end
 
@@ -1142,14 +1137,11 @@ function plotPerRunSubplots(runs, lineWidth, markerSize, trimMarkerSize, referen
         applyThesisAxesStyle();
         xlabel('PWM diff = right PWM - left PWM');
         ylabel('Mean Yaw Rate (deg/s)');
-        title(sprintf('%s | trim = %.3f', runs(i).fileLabel, runs(i).trim.pwmDiff), ...
-            'Interpreter', 'none');
         legend('Location', 'best');
         hold off;
     end
 
     if ~isempty(tileLayout)
-        title(tileLayout, '各次实验的 PWM 差值-平均角速度子图');
     end
 end
 
@@ -1182,7 +1174,6 @@ function plotOverlayFigure(runs, lineWidth, markerSize, trimMarkerSize, referenc
     applyThesisAxesStyle();
     xlabel('PWM diff = right PWM - left PWM');
     ylabel('Mean Yaw Rate (deg/s)');
-    title('全部实验叠加：PWM 差值随平均角速度变化');
     legend('Location', 'bestoutside', 'Interpreter', 'none');
     hold off;
 end
@@ -1225,10 +1216,7 @@ function plotAggregateFigure(aggregateStats, aggregateFit, aggregateColor, fitLi
     ylabel('Mean Yaw Rate (deg/s)');
 
     if aggregateFit.available && isfinite(aggregateFit.zeroPwmDiff)
-        title(sprintf('总体趋势：直行补偿 PWM diff = %.3f', ...
-            aggregateFit.zeroPwmDiff));
     else
-        title('总体趋势：PWM 差值与平均角速度');
     end
 
     legend('Location', 'best');
@@ -1252,7 +1240,6 @@ function plotSummaryFigure(summaryTable, summaryColor)
     xticklabels(summaryTable.FileName);
     xtickangle(30);
     xlabel('CSV File');
-    title('各次实验的直行补偿量汇总');
     legend('Location', 'best');
 end
 

@@ -284,7 +284,6 @@ if showControlFigure
     applyThesisAxesStyle();
     xlabel('时间 (s)');
     ylabel('PWM 差值');
-    title(sprintf('Z 型实验 PWM 输入（幅值 = %d）', round(zPwmDiffAmplitude)));
     legend('Location', 'best');
     hold off;
 end
@@ -299,11 +298,9 @@ if enableValidation
         'DisplayName', measuredLegendText);
     plot(time, simResult.psiDeg, '--', 'Color', [0.10, 0.30, 0.92], 'LineWidth', 1.8, ...
         'DisplayName', simulatedLegendText);
-    title(sprintf('Z%.0f°/%.0f° 航向角仿真与验证', zSwitchYawDeg, zSwitchYawDeg));
 else
     plot(time, simResult.psiDeg, '-', 'Color', [0.10, 0.30, 0.92], 'LineWidth', 1.8, ...
         'DisplayName', 'Nomoto 仿真航向角');
-    title(sprintf('Z%.0f°/%.0f° 航向角仿真结果', zSwitchYawDeg, zSwitchYawDeg));
 end
 
 applyThesisAxesStyle();
@@ -331,7 +328,6 @@ if enableValidation && showYawErrorFigure
     applyThesisAxesStyle();
     xlabel('时间 (s)');
     ylabel('误差 / °');
-    title(sprintf('航向角误差曲线（RMSE = %.3f°，MAE = %.3f°）', rmseYawDeg, maeYawDeg));
     legend('Location', 'best');
     hold off;
 end

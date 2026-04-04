@@ -294,7 +294,6 @@ yline(ax1, data.ROutM, '--', ...
 grid(ax1, 'on');
 box(ax1, 'on');
 ylabel(ax1, '距离 / m');
-title(ax1, '无人艇距离-时间曲线', 'FontWeight', 'bold');
 legend(ax1, 'Location', 'best');
 
 ax2 = nexttile(t, 2);
@@ -307,7 +306,6 @@ grid(ax2, 'on');
 box(ax2, 'on');
 xlabel(ax2, '时间 / s');
 ylabel(ax2, '状态');
-title(ax2, '电机开关状态', 'FontWeight', 'bold');
 ylim(ax2, [-0.1, 1.1]);
 yticks(ax2, [0, 1]);
 yticklabels(ax2, {'0', '1'});
@@ -361,7 +359,6 @@ box(ax, 'on');
 axis(ax, 'equal');
 xlabel(ax, 'X / m');
 ylabel(ax, 'Y / m');
-title(ax, '无人艇轨迹图', 'FontWeight', 'bold');
 legend(ax, 'Location', 'best');
 
 files = saveFigure(fig, cfg.RunOutputRoot, 'trajectory', cfg);
@@ -425,7 +422,6 @@ yline(ax1, data.ROutM, '--', ...
 grid(ax1, 'on');
 box(ax1, 'on');
 ylabel(ax1, '距离 / m');
-title(ax1, sprintf('回收过程 %02d：从电机启动到回到 R_{in}', episodeIndex), 'FontWeight', 'bold');
 legend(ax1, 'Location', 'best');
 
 ax2 = nexttile(t, 2);
@@ -441,7 +437,6 @@ plot(ax2, tLocal, currentHeading, ...
 grid(ax2, 'on');
 box(ax2, 'on');
 ylabel(ax2, '航向角 / deg');
-title(ax2, '目标航向角与实际航向角跟踪', 'FontWeight', 'bold');
 legend(ax2, 'Location', 'best');
 
 ax3 = nexttile(t, 3);
@@ -464,7 +459,6 @@ grid(ax3, 'on');
 box(ax3, 'on');
 xlabel(ax3, '相对时间 / s');
 ylabel(ax3, 'PWM');
-title(ax3, '双桨差速 PWM 波形', 'FontWeight', 'bold');
 legend(ax3, 'Location', 'best');
 
 [timeMin, timeMax] = computeAxisLimits(tLocal);
@@ -472,10 +466,6 @@ xlim(ax1, [timeMin, timeMax]);
 xlim(ax2, [timeMin, timeMax]);
 xlim(ax3, [timeMin, timeMax]);
 
-subtitle(t, sprintf(['事件起点: t = %.3f s, distance = %.3f m; ' ...
-    '事件终点: t = %.3f s, distance = %.3f m'], ...
-    episode.startTimeS, data.DistanceM(episode.startIndex), ...
-    episode.endTimeS, data.DistanceM(episode.endIndex)));
 
 files = saveFigure(fig, cfg.RunOutputRoot, ...
     sprintf('recovery_episode_%02d_detail', episodeIndex), cfg);

@@ -212,7 +212,6 @@ function result = compare_speed_pwm_csv_model(csvFile, varargin)
         'DisplayName', '识别模型');
     xlabel('PWM');
     ylabel('Speed (m/s)');
-    title('实测与识别 PWM-Speed 特性对比');
     legend('Location', 'best');
     hold off;
 
@@ -230,7 +229,6 @@ function result = compare_speed_pwm_csv_model(csvFile, varargin)
     ylabel('Error (m/s)');
     currentLowerLimit = min([curveError(:); 0]);
     ylim([currentLowerLimit, 1]);
-    title(sprintf('PWM-Speed 误差曲线（RMSE = %.4f m/s，MAE = %.4f m/s）', rmseValue, maeValue));
     legend('Location', 'best');
     hold off;
 
