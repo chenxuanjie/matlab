@@ -105,6 +105,7 @@ cfg.OutputRoot = getOption(opts, 'OutputRoot', fullfile(scriptDir, 'results'));
 cfg.OutputRoot = char(string(cfg.OutputRoot));
 cfg.ShowFigures = logical(getOption(opts, 'ShowFigures', true));
 cfg.SaveEpsFigures = logical(getOption(opts, 'SaveEpsFigures', false));
+cfg.DisplayFontName = 'SimSun';
 cfg.NeutralPwm = getOption(opts, 'NeutralPwm', 1500);
 cfg.PwmActiveTolerance = getOption(opts, 'PwmActiveTolerance', 1e-6);
 cfg.DistanceFigureWidth = max(640, round(getOption(opts, 'DistanceFigureWidth', 1280)));
@@ -293,7 +294,8 @@ yline(ax1, data.ROutM, '--', ...
     'DisplayName', 'R_{out}');
 grid(ax1, 'on');
 box(ax1, 'on');
-ylabel(ax1, '距离 / m');
+ylabel(ax1, '距离 (m)');
+applyAxesFont(ax1, cfg);
 legend(ax1, 'Location', 'best');
 
 ax2 = nexttile(t, 2);
@@ -304,8 +306,9 @@ stairs(ax2, data.TimeS, data.MotorOn, ...
     'DisplayName', '电机状态');
 grid(ax2, 'on');
 box(ax2, 'on');
-xlabel(ax2, '时间 / s');
-ylabel(ax2, '状态');
+xlabel(ax2, '时间 (s)');
+ylabel(ax2, '电机状态');
+applyAxesFont(ax2, cfg);
 ylim(ax2, [-0.1, 1.1]);
 yticks(ax2, [0, 1]);
 yticklabels(ax2, {'0', '1'});
@@ -357,8 +360,9 @@ plotCircle(ax, data.TargetXM, data.TargetYM, data.ROutM, style.OuterRadiusColor,
 grid(ax, 'on');
 box(ax, 'on');
 axis(ax, 'equal');
-xlabel(ax, 'X / m');
-ylabel(ax, 'Y / m');
+xlabel(ax, '局部横坐标 (m)');
+ylabel(ax, '局部纵坐标 (m)');
+applyAxesFont(ax, cfg);
 legend(ax, 'Location', 'best');
 
 files = saveFigure(fig, cfg.RunOutputRoot, 'trajectory', cfg);
@@ -421,7 +425,8 @@ yline(ax1, data.ROutM, '--', ...
     'DisplayName', 'R_{out}');
 grid(ax1, 'on');
 box(ax1, 'on');
-ylabel(ax1, '距离 / m');
+ylabel(ax1, '距离 (m)');
+applyAxesFont(ax1, cfg);
 legend(ax1, 'Location', 'best');
 
 ax2 = nexttile(t, 2);
@@ -436,7 +441,8 @@ plot(ax2, tLocal, currentHeading, ...
     'DisplayName', '实际航向角');
 grid(ax2, 'on');
 box(ax2, 'on');
-ylabel(ax2, '航向角 / deg');
+ylabel(ax2, '航向角 (°)');
+applyAxesFont(ax2, cfg);
 legend(ax2, 'Location', 'best');
 
 ax3 = nexttile(t, 3);
@@ -457,8 +463,9 @@ yline(ax3, 0, '--', ...
     'DisplayName', '零差速');
 grid(ax3, 'on');
 box(ax3, 'on');
-xlabel(ax3, '相对时间 / s');
-ylabel(ax3, 'PWM');
+xlabel(ax3, '相对时间 (s)');
+ylabel(ax3, 'PWM 差值 (PWM)');
+applyAxesFont(ax3, cfg);
 legend(ax3, 'Location', 'best');
 
 [timeMin, timeMax] = computeAxisLimits(tLocal);
@@ -550,6 +557,28 @@ if ~isfinite(axisMin) || ~isfinite(axisMax)
     axisMax = 1;
 elseif axisMax <= axisMin
     axisMax = axisMin + 1;
+end
+end
+
+function applyAxesFont(ax, cfg)
+if nargin < 1 || isempty(ax)
+    ax = gca;
+end
+
+fontName = 'SimSun';
+if nargin >= 2 && isstruct(cfg) && isfield(cfg, 'DisplayFontName') && ~isempty(cfg.DisplayFontName)
+    fontName = cfg.DisplayFontName;
+end
+
+set(ax, 'FontName', fontName);
+if isgraphics(ax.XLabel)
+    set(ax.XLabel, 'FontName', fontName);
+end
+if isgraphics(ax.YLabel)
+    set(ax.YLabel, 'FontName', fontName);
+end
+if isgraphics(ax.ZLabel)
+    set(ax.ZLabel, 'FontName', fontName);
 end
 end
 

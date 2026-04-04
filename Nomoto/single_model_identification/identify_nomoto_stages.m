@@ -674,13 +674,13 @@ nexttile;
 plotDiscreteSeries(data.timeS, data.headingRelDeg, style.headingColor);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('航向角 (deg)');
+ylabel('航向角 (°)');
 
 nexttile;
 plot(data.timeS, data.uPwm, 'Color', style.inputColor, 'LineWidth', cfg.LineWidth);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('半 PWM 差值');
+ylabel('半 PWM 差值 (PWM)');
 
 nexttile;
 plotDiscreteSeries(data.timeS, data.yawRateDegS, style.measuredColor);
@@ -688,17 +688,17 @@ hold on;
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.2);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend({'实测值', '滤波值'}, 'Location', 'best');
 hold off;
 
 nexttile;
 if any(isfinite(data.speedMps))
     plotDiscreteSeries(data.timeS, data.speedMps, style.speedColor);
-    ylabel('线速度 (m/s)');
+    ylabel('纵向速度 (m/s)');
 else
     plot(data.timeS, nan(size(data.timeS)), 'Color', style.speedColor, 'LineWidth', cfg.LineWidth);
-    ylabel('线速度');
+    ylabel('纵向速度 (m/s)');
 end
 applyAxesStyle(style);
 xlabel('时间 (s)');
@@ -715,10 +715,12 @@ if all(isfinite(data.longitude)) && all(isfinite(data.latitude))
     scatter(data.longitude(end), data.latitude(end), 60, 'r', 'filled');
     applyAxesStyle(style);
     axis equal;
-    xlabel('经度 (°E)');
-    ylabel('纬度 (°N)');
+    xlabel('经度 (°)');
+    ylabel('纬度 (°)');
     c = colorbar;
     ylabel(c, '时间 (s)');
+    c.FontName = 'SimSun';
+    c.Label.FontName = 'SimSun';
     legend({'轨迹', '起点', '终点'}, 'Location', 'best');
     hold off;
     overviewFiles.gps = saveFigureBundle(figMap, fullfile(stageFolder, sprintf('stage%d_gps', data.stageId)), cfg);
@@ -773,7 +775,7 @@ hCenter = yline(rad2deg(steadyInfo.rRef), '--', 'Color', style.inputColor, 'Line
     'DisplayName', '稳态角速度中心');
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend([hMeasured, hFiltered, hSelected, hStart, hCenter], ...
     {'实测值', '滤波值', '筛选样本', '进入稳态起点', '稳态角速度中心'}, 'Location', 'best');
 hold off;
@@ -784,8 +786,8 @@ hold on;
 xFit = buildFitAxis(steadyInfo.uSel);
 hFitLine = plot(xFit, rad2deg(K * xFit), '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
-xlabel('修正后半 PWM 差值');
-ylabel('角速度 (deg/s)');
+xlabel('修正后半 PWM 差值 (PWM)');
+ylabel('角速度 (°/s)');
 legend([hFitPoints, hFitLine], {'筛选样本', 'r = K (u-u_{trim})'}, 'Location', 'best');
 hold off;
 
@@ -1014,8 +1016,8 @@ scatter(stage2FitXDeg, stage2FitYDeg, 18, style.pointColor, 'filled');
 hold on;
 plot(xLine, yLine, '-', 'Color', style.fitColor, 'LineWidth', 1.3);
 applyAxesStyle(style);
-xlabel('角速度导数 dr/dt (deg/s^2)');
-ylabel('K(u-u_{trim}) - r (deg/s)');
+xlabel('角速度导数 (°/s^2)');
+ylabel('K(u-u_{trim}) - r (°/s)');
 legend({'有效样本', '最小二乘拟合'}, 'Location', 'best');
 hold off;
 stageResult.lsq_figure = saveFigureBundle(figLsq, fullfile(stageFolder, 'stage2_least_squares_fit'), cfg);
@@ -1029,7 +1031,7 @@ hold on;
 plot(data.timeS, rad2deg(rModel), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend({'实测值', '线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1039,7 +1041,7 @@ hold on;
 plot(data.timeS, headingModelDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('航向角 (deg)');
+ylabel('航向角 (°)');
 legend({'实测值', '线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1115,7 +1117,7 @@ hold on;
 plot(data.timeS, rad2deg(data.yawRateRadSFiltered), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend({'原始离散点', '滤波后曲线'}, 'Location', 'best');
 hold off;
 stageResult.filter_comparison_figure = saveFigureBundle(figFilter, fullfile(stageFolder, 'stage3_filter_comparison'), cfg);
@@ -1129,7 +1131,7 @@ hold on;
 plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1139,7 +1141,7 @@ hold on;
 plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth', 1.25);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('航向角 (deg)');
+ylabel('航向角 (°)');
 legend({'实测值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1184,7 +1186,7 @@ plot(data.timeS, rad2deg(rNonlinear), '-', 'Color', style.fitColor, 'LineWidth',
 applyAxesStyle(style);
 expandYAxis([rad2deg(data.yawRateRadSFiltered); rad2deg(rNonlinear)], 0.18);
 xlabel('时间 (s)');
-ylabel('角速度 (deg/s)');
+ylabel('角速度 (°/s)');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1195,7 +1197,7 @@ plot(data.timeS, headingNonlinearDeg, '-', 'Color', style.fitColor, 'LineWidth',
 applyAxesStyle(style);
 expandYAxis([data.headingRelDeg; headingNonlinearDeg], 0.18);
 xlabel('时间 (s)');
-ylabel('航向角 (deg)');
+ylabel('航向角 (°)');
 legend({'滤波值', '非线性模型'}, 'Location', 'best');
 hold off;
 
@@ -1211,7 +1213,7 @@ hold on;
 yline(0, '--', 'Color', style.referenceColor, 'LineWidth', 1.0);
 applyAxesStyle(style);
 xlabel('时间 (s)');
-ylabel('航向角误差 (deg)');
+ylabel('航向角误差 (°)');
 legend({'实测-模型误差', '零误差参考线'}, 'Location', 'best');
 hold off;
 
@@ -1401,6 +1403,10 @@ box on;
 ax = gca;
 ax.LineWidth = 0.9;
 ax.FontSize = 10;
+ax.FontName = 'SimSun';
+ax.XLabel.FontName = 'SimSun';
+ax.YLabel.FontName = 'SimSun';
+ax.ZLabel.FontName = 'SimSun';
 ax.GridAlpha = 0.18;
 ax.MinorGridAlpha = 0.08;
 ax.XColor = [0.15, 0.15, 0.15];

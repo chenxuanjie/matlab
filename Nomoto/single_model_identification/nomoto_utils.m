@@ -556,6 +556,7 @@ classdef nomoto_utils
             style.pointSize = 32;
             style.axesLineWidth = 0.9;
             style.fontSize = 11;
+            style.fontName = 'SimSun';
         end
 
         function applyThesisAxesStyle(style)
@@ -571,6 +572,12 @@ classdef nomoto_utils
             ax = gca;
             ax.LineWidth = style.axesLineWidth;
             ax.FontSize = style.fontSize;
+            if isfield(style, 'fontName') && ~isempty(style.fontName)
+                ax.FontName = style.fontName;
+                ax.XLabel.FontName = style.fontName;
+                ax.YLabel.FontName = style.fontName;
+                ax.ZLabel.FontName = style.fontName;
+            end
         end
 
         function x = ensureColumn(x)

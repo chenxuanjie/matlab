@@ -958,8 +958,8 @@ function plotControllerOutputFigure(runs, lineWidth, referenceLineColor)
         yline(0, '--', 'Color', referenceLineColor, 'LineWidth', 1.0, ...
             'HandleVisibility', 'off');
         applyThesisAxesStyle();
-        xlabel('Time (s)');
-        ylabel('PWM diff');
+        xlabel('时间 (s)');
+        ylabel('PWM 差值 (PWM)');
         legend('Location', 'best', 'Interpreter', 'none');
         hold off;
         return;
@@ -998,7 +998,7 @@ function plotControllerOutputFigure(runs, lineWidth, referenceLineColor)
     yline(ax1, 0, '--', 'Color', referenceLineColor, 'LineWidth', 1.0, ...
         'HandleVisibility', 'off');
     applyThesisAxesStyle();
-    ylabel(ax1, 'Command / PWM diff');
+    ylabel(ax1, '控制输出 (PWM)');
     legend(ax1, 'Location', 'best');
     hold(ax1, 'off');
 
@@ -1017,8 +1017,8 @@ function plotControllerOutputFigure(runs, lineWidth, referenceLineColor)
         'LineWidth', 1.0, ...
         'DisplayName', 'control mode');
     applyThesisAxesStyle();
-    xlabel(ax2, 'Time (s)');
-    ylabel(ax2, 'PWM / Mode');
+    xlabel(ax2, '时间 (s)');
+    ylabel(ax2, 'PWM 与模式状态');
     legend(ax2, 'Location', 'best');
     hold(ax2, 'off');
 end
@@ -1047,8 +1047,8 @@ function plotYawRateTimeFigure(runs, lineWidth, markerSize, referenceLineColor)
         yline(0, '--', 'Color', referenceLineColor, 'LineWidth', 1.0, ...
             'HandleVisibility', 'off');
         applyThesisAxesStyle();
-        xlabel('Time (s)');
-        ylabel('Yaw Rate (deg/s)');
+        xlabel('时间 (s)');
+        ylabel('角速度 (°/s)');
         legend('Location', 'best');
         hold off;
         return;
@@ -1085,8 +1085,8 @@ function plotYawRateTimeFigure(runs, lineWidth, markerSize, referenceLineColor)
         yline(0, '--', 'Color', referenceLineColor, 'LineWidth', 1.0, ...
             'HandleVisibility', 'off');
         applyThesisAxesStyle();
-        xlabel('Time (s)');
-        ylabel('Yaw Rate (deg/s)');
+        xlabel('时间 (s)');
+        ylabel('角速度 (°/s)');
         legend('Location', 'best');
         hold off;
     end
@@ -1135,8 +1135,8 @@ function plotPerRunSubplots(runs, lineWidth, markerSize, trimMarkerSize, referen
         end
 
         applyThesisAxesStyle();
-        xlabel('PWM diff = right PWM - left PWM');
-        ylabel('Mean Yaw Rate (deg/s)');
+        xlabel('PWM 差值 (右桨 PWM - 左桨 PWM)');
+        ylabel('平均角速度 (°/s)');
         legend('Location', 'best');
         hold off;
     end
@@ -1172,8 +1172,8 @@ function plotOverlayFigure(runs, lineWidth, markerSize, trimMarkerSize, referenc
         'HandleVisibility', 'off');
 
     applyThesisAxesStyle();
-    xlabel('PWM diff = right PWM - left PWM');
-    ylabel('Mean Yaw Rate (deg/s)');
+    xlabel('PWM 差值 (右桨 PWM - 左桨 PWM)');
+    ylabel('平均角速度 (°/s)');
     legend('Location', 'bestoutside', 'Interpreter', 'none');
     hold off;
 end
@@ -1212,8 +1212,8 @@ function plotAggregateFigure(aggregateStats, aggregateFit, aggregateColor, fitLi
         'HandleVisibility', 'off');
 
     applyThesisAxesStyle();
-    xlabel('PWM diff = right PWM - left PWM');
-    ylabel('Mean Yaw Rate (deg/s)');
+    xlabel('PWM 差值 (右桨 PWM - 左桨 PWM)');
+    ylabel('平均角速度 (°/s)');
 
     if aggregateFit.available && isfinite(aggregateFit.zeroPwmDiff)
     else
@@ -1233,13 +1233,13 @@ function plotSummaryFigure(summaryTable, summaryColor)
         'FaceColor', summaryColor, ...
         'EdgeColor', summaryColor, ...
         'DisplayName', '直行补偿 PWM diff');
-    ylabel('Trim PWM diff');
+    ylabel('直行补偿 PWM 差值 (PWM)');
 
     applyThesisAxesStyle();
     xticks(x);
     xticklabels(summaryTable.FileName);
     xtickangle(30);
-    xlabel('CSV File');
+    xlabel('CSV 文件');
     legend('Location', 'best');
 end
 
@@ -1258,6 +1258,10 @@ function applyThesisAxesStyle()
     ax = gca;
     ax.LineWidth = 0.9;
     ax.FontSize = 11;
+    ax.FontName = 'SimSun';
+    ax.XLabel.FontName = 'SimSun';
+    ax.YLabel.FontName = 'SimSun';
+    ax.ZLabel.FontName = 'SimSun';
 end
 
 function saveFigureBundle(figures, outputRoot)

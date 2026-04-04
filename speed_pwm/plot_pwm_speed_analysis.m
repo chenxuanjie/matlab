@@ -318,8 +318,8 @@ else
     warning('唯一 PWM 数量不足，无法进行 %d 阶加权拟合。', fitDegree);
 end
 
-xlabel('PWM');
-ylabel('Steady Speed (m/s)');
+xlabel('PWM 指令 (PWM)');
+ylabel('稳态速度 (m/s)');
 legend('Location', 'best');
 hold off;
 
@@ -687,10 +687,10 @@ function drawPwmSegmentAxes(ax, currentSegments, currentPwm, segmentPlotCfg, sho
 
         if segmentPlotCfg.useRelativeTimeInSegmentPlots
             plotTime = currentTime - currentTime(1);
-            xLabelText = 'Relative Time (s)';
+            xLabelText = '相对时间 (s)';
         else
             plotTime = currentTime;
-            xLabelText = 'Time (s)';
+            xLabelText = '时间 (s)';
         end
 
         plot(ax, plotTime, currentSpeed, '.', ...
@@ -710,7 +710,7 @@ function drawPwmSegmentAxes(ax, currentSegments, currentPwm, segmentPlotCfg, sho
     end
 
     if showYAxisLabel
-        ylabel(ax, 'Speed (m/s)');
+        ylabel(ax, '纵向速度 (m/s)');
     else
         ylabel(ax, '');
         ax.YTickLabel = [];
@@ -815,6 +815,10 @@ function applyThesisAxesStyle(ax)
     box(ax, 'on');
     ax.LineWidth = 0.9;
     ax.FontSize = 11;
+    ax.FontName = 'SimSun';
+    ax.XLabel.FontName = 'SimSun';
+    ax.YLabel.FontName = 'SimSun';
+    ax.ZLabel.FontName = 'SimSun';
 end
 
 function rSquared = computeRSquared(yTrue, yPred)

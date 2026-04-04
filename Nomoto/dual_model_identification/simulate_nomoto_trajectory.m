@@ -334,8 +334,8 @@ if ~strcmp(modelMode, 'dual')
     axis equal;
     xlim(xLimitsWithPadding);
     ylim(yLimitsWithPadding);
-    xlabel('X 位置 (m)');
-    ylabel('Y 位置 (m)');
+    xlabel('横向位置 (m)');
+    ylabel('纵向位置 (m)');
     legend('Location', 'best');
     hold off;
 end
@@ -386,8 +386,8 @@ for i = 1:numel(scenarios)
     scatter(scenarios(i).x(end), scenarios(i).y(end), 50, ...
         scenarios(i).trajectoryColor, 'filled', 'DisplayName', [scenarios(i).label '终点']);
 end
-xlabel('X 位置 (m)');
-ylabel('Y 位置 (m)');
+xlabel('横向位置 (m)');
+ylabel('纵向位置 (m)');
 if strcmp(modelMode, 'dual')
 else
 end
@@ -401,8 +401,8 @@ if enableAnimation
     axis equal;
     grid on;
     hold on;
-    xlabel('X 位置 (m)');
-    ylabel('Y 位置 (m)');
+    xlabel('横向位置 (m)');
+    ylabel('纵向位置 (m)');
     xlim(xLimitsWithPadding);
     ylim(yLimitsWithPadding);
 

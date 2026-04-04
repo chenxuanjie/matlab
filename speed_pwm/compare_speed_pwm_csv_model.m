@@ -210,8 +210,8 @@ function result = compare_speed_pwm_csv_model(csvFile, varargin)
         'DisplayName', 'CSV 实测数据');
     plot(xFit, yFit, '-', 'Color', fitLineColor, 'LineWidth', fitLineWidth, ...
         'DisplayName', '识别模型');
-    xlabel('PWM');
-    ylabel('Speed (m/s)');
+    xlabel('PWM 指令 (PWM)');
+    ylabel('纵向速度 (m/s)');
     legend('Location', 'best');
     hold off;
 
@@ -225,8 +225,8 @@ function result = compare_speed_pwm_csv_model(csvFile, varargin)
         'DisplayName', '实测曲线 - 识别模型');
     yline(0, '--', 'Color', [0.35, 0.35, 0.35], 'LineWidth', 1.0, 'HandleVisibility', 'off');
     applyThesisAxesStyle();
-    xlabel('PWM');
-    ylabel('Error (m/s)');
+    xlabel('PWM 指令 (PWM)');
+    ylabel('速度误差 (m/s)');
     currentLowerLimit = min([curveError(:); 0]);
     ylim([currentLowerLimit, 1]);
     legend('Location', 'best');
@@ -388,4 +388,8 @@ function applyThesisAxesStyle()
     ax = gca;
     ax.LineWidth = 0.9;
     ax.FontSize = 11;
+    ax.FontName = 'SimSun';
+    ax.XLabel.FontName = 'SimSun';
+    ax.YLabel.FontName = 'SimSun';
+    ax.ZLabel.FontName = 'SimSun';
 end

@@ -533,7 +533,7 @@ plot(axHeading, data.timeS, data.expectedHeadingDeg, '--', ...
     'DisplayName', '期望航向角');
 applyAxesStyle(axHeading);
 xlabel(axHeading, '时间 (s)');
-ylabel(axHeading, '航向角 (deg)');
+ylabel(axHeading, '航向角 (°)');
 applyFigureTitle(axHeading, '航向角跟踪曲线', buildControllerAnnotation(data), cfg);
 legend(axHeading, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(axHeading, cfg);
@@ -596,7 +596,7 @@ for i = 1:numel(datasets)
 end
 applyAxesStyle(axHeading);
 xlabel(axHeading, '时间 (s)');
-ylabel(axHeading, '航向角 (deg)');
+ylabel(axHeading, '航向角 (°)');
 applyFigureTitle(axHeading, '航向角对比', buildCompareAnnotation(datasets), cfg);
 legend(axHeading, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(axHeading, cfg);
@@ -631,7 +631,7 @@ yline(ax, 0, '--', ...
     'HandleVisibility', 'off');
 applyAxesStyle(ax);
 xlabel(ax, '时间 (s)');
-ylabel(ax, 'PWM 差值 (right-left)');
+ylabel(ax, '双桨 PWM 差值 (右桨 - 左桨)');
 applyFigureTitle(ax, 'PWM 差值曲线', buildPwmFigureAnnotation(data), cfg);
 legend(ax, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(ax, cfg);
@@ -667,7 +667,7 @@ yline(ax, 0, '--', ...
     'HandleVisibility', 'off');
 applyAxesStyle(ax);
 xlabel(ax, '时间 (s)');
-ylabel(ax, 'PWM 差值 (right-left)');
+ylabel(ax, '双桨 PWM 差值 (右桨 - 左桨)');
 applyFigureTitle(ax, 'PWM 差值对比', buildComparePwmAnnotation(datasets), cfg);
 legend(ax, 'Location', 'best', 'Interpreter', 'none');
 applyChineseTextStyle(ax, cfg);
@@ -1422,31 +1422,7 @@ if ~isempty(cachedFontName)
     fontName = cachedFontName;
     return;
 end
-
-candidates = { ...
-    'Microsoft YaHei UI', ...
-    'Microsoft YaHei', ...
-    'DengXian', ...
-    'SimHei', ...
-    'SimSun', ...
-    'Noto Sans SC'};
-
-fontName = 'Helvetica';
-
-try
-    availableFonts = string(listfonts);
-catch
-    availableFonts = string.empty(0, 1);
-end
-
-for i = 1:numel(candidates)
-    if any(strcmpi(availableFonts, candidates{i}))
-        fontName = candidates{i};
-        cachedFontName = fontName;
-        return;
-    end
-end
-
+fontName = 'SimSun';
 cachedFontName = fontName;
 end
 

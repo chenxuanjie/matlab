@@ -283,7 +283,7 @@ if showControlFigure
         'DisplayName', 'PWM 差值输入');
     applyThesisAxesStyle();
     xlabel('时间 (s)');
-    ylabel('PWM 差值');
+    ylabel('PWM 差值 (PWM)');
     legend('Location', 'best');
     hold off;
 end
@@ -305,7 +305,7 @@ end
 
 applyThesisAxesStyle();
 xlabel('时间 (s)');
-ylabel('航向角 / °');
+ylabel('航向角 (°)');
 legend('Location', 'best');
 hold off;
 
@@ -327,7 +327,7 @@ if enableValidation && showYawErrorFigure
     yline(0, '--', 'Color', [0.35, 0.35, 0.35], 'LineWidth', 1.0, 'HandleVisibility', 'off');
     applyThesisAxesStyle();
     xlabel('时间 (s)');
-    ylabel('误差 / °');
+    ylabel('航向角误差 (°)');
     legend('Location', 'best');
     hold off;
 end
@@ -703,4 +703,8 @@ function applyThesisAxesStyle()
     ax = gca;
     ax.LineWidth = 0.9;
     ax.FontSize = 11;
+    ax.FontName = 'SimSun';
+    ax.XLabel.FontName = 'SimSun';
+    ax.YLabel.FontName = 'SimSun';
+    ax.ZLabel.FontName = 'SimSun';
 end
